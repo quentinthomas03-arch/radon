@@ -1,51 +1,20 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#1a1a2e">
-  <meta name="description" content="Saisie terrain des mesures radon — CT et CSP">
-  <title>Radon — Saisie terrain</title>
-  <link rel="manifest" href="manifest.json">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><circle cx='24' cy='24' r='22' fill='%231a1a2e' stroke='%2300d4aa' stroke-width='2.5'/><text x='24' y='30' text-anchor='middle' font-size='18' font-weight='700' fill='%2300d4aa'>Rn</text></svg>">
-  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><circle cx='24' cy='24' r='22' fill='%231a1a2e' stroke='%2300d4aa' stroke-width='2.5'/><text x='24' y='30' text-anchor='middle' font-size='18' font-weight='700' fill='%2300d4aa'>Rn</text></svg>">
-  <link rel="stylesheet" href="css/main.css">
-</head>
-<body>
-  <div id="app">
-    <div id="app-content"></div>
-  </div>
-
-  <div id="toast-container"></div>
-  <div id="loading-overlay" class="hidden"><div class="spinner"></div></div>
-
-  <script type="module">
-    import { initApp, bindGlobalNav } from './js/app.js';
-
-    // Attendre le DOM
-    document.addEventListener('DOMContentLoaded', async () => {
-      try {
-        await initApp();
-        bindGlobalNav();
-      } catch (err) {
-        console.error('Init error:', err);
-        document.getElementById('app-content').innerHTML = `
-          <div class="empty-state">
-            <h2>Erreur d'initialisation</h2>
-            <p>${err.message}</p>
-          </div>
-        `;
-      }
-    });
-
-    // Enregistrer le Service Worker
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js')
-        .then(reg => console.log('SW registered:', reg.scope))
-        .catch(err => console.warn('SW registration failed:', err));
+{
+  "name": "Radon — Saisie terrain",
+  "short_name": "Radon",
+  "description": "Saisie terrain des mesures d'activité volumique du radon — Code du Travail et Code de la Santé Publique",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#1a1a2e",
+  "background_color": "#0f1117",
+  "categories": ["utilities", "business"],
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='96' fill='%231a1a2e'/><circle cx='256' cy='256' r='180' fill='none' stroke='%2300d4aa' stroke-width='16'/><text x='256' y='290' text-anchor='middle' font-size='160' font-weight='700' fill='%2300d4aa' font-family='sans-serif'>Rn</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
-  </script>
-</body>
-</html>
+  ]
+}
