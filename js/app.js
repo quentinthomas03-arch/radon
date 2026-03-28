@@ -83,9 +83,19 @@ function renderHome() {
     <div class="home-screen">
       <div class="home-header">
         <div class="home-logo">
-          <svg viewBox="0 0 48 48" width="64" height="64">
-            <circle cx="24" cy="24" r="22" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
-            <text x="24" y="30" text-anchor="middle" font-size="18" font-weight="700" fill="var(--accent)">Rn</text>
+          <svg viewBox="0 0 100 100" width="72" height="72">
+            <defs>
+              <linearGradient id="logo-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#4a6a8a"/>
+                <stop offset="100%" stop-color="#5b3290"/>
+              </linearGradient>
+            </defs>
+            <rect width="100" height="100" rx="20" fill="url(#logo-grad)"/>
+            <circle cx="50" cy="44" r="26" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="1.5"/>
+            <text x="50" y="52" text-anchor="middle" font-family="Georgia,serif" font-size="30" font-weight="700" fill="#fff">Rn</text>
+            <text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,.45)">222</text>
+            <rect x="20" y="78" width="60" height="1.5" rx="1" fill="rgba(255,255,255,.12)"/>
+            <text x="50" y="92" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="600" fill="rgba(255,255,255,.5)">MESURAGE</text>
           </svg>
         </div>
         <h1>Radon — Saisie terrain</h1>
@@ -110,7 +120,7 @@ function renderHome() {
 
       <div class="home-actions">
         <button class="btn btn-secondary btn-block" id="btn-list-missions">
-          📋 Missions existantes
+          Missions existantes
         </button>
       </div>
     </div>
