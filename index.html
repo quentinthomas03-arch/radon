@@ -1,0 +1,715 @@
+// ============================================================
+// plan.js — Plan interactif : import, placement capteurs, export
+// ============================================================
+
+import * as State from './state.js';
+import { PlanDB, PointDB, ZoneDB, BatimentDB } from './database.js';
+
+const $ = (sel, ctx = document) => ctx.querySelector(sel);
+const $$ = (sel, ctx = document) => ctx.querySelectorAll(sel);
+
+let _canvas, _ctx, _planImg, _currentPlan;
+let _scale = 1, _offsetX = 0, _offsetY = 0;
+let _isDragging = false, _lastTouch = null;
+let _placingMode = false;
+
+// ── Rendu du module plan ────────────────────────────────────
+
+export function renderPlan() {
+  return `
+    <div id="plan-container">
+      <div class="plan-toolbar">
+        <button class="btn btn-sm" id="btn-import-plan" title="Importer un plan">
+          📷 Importer plan
+        </button>
+        <button class="btn btn-sm" id="btn-place-mode" title="Placer un capteur">
+          📌 Placer capteur
+        </button>
+        <button class="btn btn-sm" id="btn-export-png" title="Exporter en PNG">
+          📤 Exporter PNG
+        </button>
+        <div class="plan-zoom">
+          <button class="btn-icon" id="btn-zoom-in">+</button>
+          <button class="btn-icon" id="btn-zoom-out">−</button>
+          <button class="btn-icon" id="btn-zoom-fit">⊡</button>
+        </div>
+      </div>
+
+      <div class="plan-canvas-wrap" id="plan-canvas-wrap">
+        <canvas id="plan-canvas"></canvas>
+        <div class="plan-empty" id="plan-empty">
+          <div class="plan-empty-icon">🗺</div>
+          <p>Importer un plan (photo ou image)</p>
+          <p class="text-sm">Formats : JPG, PNG, PDF (1re page)</p>
+          <button class="btn btn-primary" id="btn-import-plan-empty">
+            📷 Importer
+          </button>
+        </div>
+      </div>
+
+      <input type="file" id="plan-file-input" accept="image/*,.pdf"
+        style="display:none" capture="environment">
+    </div>
+  `;
+}
+
+// ── Initialisation ──────────────────────────────────────────
+
+export async function initPlan() {
+  const container = $('#plan-container');
+  if (!container) return;
+
+  // Bind events
+  const fileInput = $('#plan-file-input');
+
+  $('#btn-import-plan')?.addEventListener('click', () => fileInput?.click());
+  $('#btn-import-plan-empty')?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', handleFileImport);
+
+  $('#btn-place-mode')?.addEventListener('click', togglePlaceMode);
+  $('#btn-export-png')?.addEventListener('click', exportAnnotatedPNG);
+
+  $('#btn-zoom-in')?.addEventListener('click', () => zoom(1.2));
+  $('#btn-zoom-out')?.addEventListener('click', () => zoom(0.8));
+  $('#btn-zoom-fit')?.addEventListener('click', zoomFit);
+
+  // Canvas events
+  _canvas = $('#plan-canvas');
+  if (_canvas) {
+    _ctx = _canvas.getContext('2d');
+    _canvas.addEventListener('click', handleCanvasClick);
+    _canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    _canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    _canvas.addEventListener('touchend', handleTouchEnd);
+
+    // Mouse pan
+    _canvas.addEventListener('mousedown', handleMouseDown);
+    _canvas.addEventListener('mousemove', handleMouseMove);
+    _canvas.addEventListener('mouseup', handleMouseUp);
+    _canvas.addEventListener('wheel', handleWheel, { passive: false });
+  }
+
+  // Charger le plan existant
+  const missionId = State.get('currentMissionId');
+  if (missionId) {
+    const plans = await PlanDB.getByMission(missionId);
+    if (plans.length > 0) {
+      _currentPlan = plans[0];
+      State.set('currentPlanId', _currentPlan.id);
+      await loadPlanImage(_currentPlan.imageData);
+    }
+  }
+}
+
+// ── Import de fichier ───────────────────────────────────────
+
+async function handleFileImport(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  State.setLoading(true);
+
+  try {
+    let imageData;
+
+    if (file.type === 'application/pdf') {
+      imageData = await renderPDFFirstPage(file);
+    } else {
+      imageData = await readFileAsDataURL(file);
+    }
+
+    // Sauvegarder en DB
+    const missionId = State.get('currentMissionId');
+    if (!missionId) throw new Error('Pas de mission active');
+
+    // Supprimer l'ancien plan si existant
+    if (_currentPlan) {
+      await PlanDB.delete(_currentPlan.id);
+    }
+
+    _currentPlan = await PlanDB.create(missionId, {
+      name: file.name,
+      imageData: imageData,
+      mimeType: file.type.startsWith('image/') ? file.type : 'image/png',
+    });
+
+    State.set('currentPlanId', _currentPlan.id);
+    await loadPlanImage(imageData);
+
+    // Masquer l'état vide
+    const emptyEl = $('#plan-empty');
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    State.toast('Plan importé', 'success');
+  } catch (err) {
+    State.toast('Erreur import : ' + err.message, 'error');
+  }
+
+  State.setLoading(false);
+  e.target.value = '';
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Lecture fichier échouée'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderPDFFirstPage(file) {
+  // Utiliser pdf.js via CDN si disponible, sinon fallback
+  if (typeof pdfjsLib === 'undefined') {
+    // Charger pdf.js dynamiquement
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale: 2 });
+
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = viewport.width;
+  offCanvas.height = viewport.height;
+  const offCtx = offCanvas.getContext('2d');
+
+  await page.render({ canvasContext: offCtx, viewport }).promise;
+  return offCanvas.toDataURL('image/png');
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// ── Chargement & affichage du plan ──────────────────────────
+
+async function loadPlanImage(dataUrl) {
+  _planImg = new Image();
+  return new Promise((resolve) => {
+    _planImg.onload = () => {
+      if (_currentPlan) {
+        _currentPlan.width = _planImg.naturalWidth;
+        _currentPlan.height = _planImg.naturalHeight;
+      }
+      zoomFit();
+      resolve();
+    };
+    _planImg.src = dataUrl;
+  });
+}
+
+function drawPlan() {
+  if (!_canvas || !_ctx) return;
+
+  const wrap = $('#plan-canvas-wrap');
+  if (!wrap) return;
+
+  _canvas.width = wrap.clientWidth;
+  _canvas.height = wrap.clientHeight;
+
+  _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+  _ctx.fillStyle = '#f0f0f0';
+  _ctx.fillRect(0, 0, _canvas.width, _canvas.height);
+
+  if (_planImg && _planImg.complete) {
+    _ctx.save();
+    _ctx.translate(_offsetX, _offsetY);
+    _ctx.scale(_scale, _scale);
+    _ctx.drawImage(_planImg, 0, 0);
+    _ctx.restore();
+
+    // Dessiner les capteurs
+    drawMarkers();
+  }
+
+  // Mode placement actif
+  if (_placingMode) {
+    _ctx.save();
+    _ctx.strokeStyle = 'var(--accent, #00d4aa)';
+    _ctx.lineWidth = 3;
+    _ctx.setLineDash([8, 4]);
+    _ctx.strokeRect(4, 4, _canvas.width - 8, _canvas.height - 8);
+    _ctx.restore();
+  }
+}
+
+async function drawMarkers() {
+  const missionId = State.get('currentMissionId');
+  if (!missionId || !_currentPlan) return;
+
+  const points = await PointDB.getByMission(missionId);
+  const zones  = await ZoneDB.getByMission(missionId);
+  const config = State.getConfig();
+
+  for (const point of points) {
+    if (!point.planPosition || point.planPosition.planId !== _currentPlan.id) continue;
+
+    const { x, y } = point.planPosition;
+    const screenX = x * _scale + _offsetX;
+    const screenY = y * _scale + _offsetY;
+
+    // Couleur selon résultat
+    let color = '#3498db';  // bleu par défaut (pas de résultat)
+    const result = point.resultats;
+    if (result) {
+      const val = parseFloat(result.activite_bqm3 || result.concentration || 0);
+      if (val > 0) {
+        if (val < 300) color = config.seuils.couleurs.vert.color;
+        else if (val < 1000) color = config.seuils.couleurs.orange.color;
+        else color = config.seuils.couleurs.rouge.color;
+      }
+    }
+
+    // Trouver la zone
+    const zone = zones.find(z => z.id === point.zoneId);
+    const zoneLabel = zone?.data?.nom || zone?.data?.numero || '?';
+
+    // Dessiner le marqueur
+    _ctx.save();
+
+    // Cercle
+    _ctx.beginPath();
+    _ctx.arc(screenX, screenY, 14, 0, Math.PI * 2);
+    _ctx.fillStyle = color;
+    _ctx.fill();
+    _ctx.strokeStyle = '#fff';
+    _ctx.lineWidth = 2;
+    _ctx.stroke();
+
+    // Numéro dosimètre
+    const numDosi = point.data?.num_detecteur || point.data?.num_dosimetrie || '';
+    if (numDosi) {
+      _ctx.fillStyle = '#fff';
+      _ctx.font = 'bold 9px sans-serif';
+      _ctx.textAlign = 'center';
+      _ctx.textBaseline = 'middle';
+      _ctx.fillText(numDosi.slice(-4), screenX, screenY);
+    }
+
+    // Label zone (au-dessus)
+    _ctx.fillStyle = color;
+    _ctx.font = 'bold 11px sans-serif';
+    _ctx.textAlign = 'center';
+    _ctx.textBaseline = 'bottom';
+    _ctx.fillText(`Z${zoneLabel}`, screenX, screenY - 18);
+
+    // Résultat (en dessous)
+    if (result) {
+      const val = result.activite_bqm3 || result.concentration;
+      if (val) {
+        _ctx.fillStyle = '#333';
+        _ctx.font = '10px sans-serif';
+        _ctx.textAlign = 'center';
+        _ctx.textBaseline = 'top';
+        _ctx.fillText(`${val} Bq/m³`, screenX, screenY + 18);
+      }
+    }
+
+    _ctx.restore();
+  }
+}
+
+// ── Mode placement ──────────────────────────────────────────
+
+function togglePlaceMode() {
+  _placingMode = !_placingMode;
+  const btn = $('#btn-place-mode');
+  if (btn) {
+    btn.classList.toggle('active', _placingMode);
+    btn.textContent = _placingMode ? '✋ Annuler' : '📌 Placer capteur';
+  }
+  drawPlan();
+  if (_placingMode) {
+    State.toast('Cliquez sur le plan pour placer un capteur', 'info', 2000);
+  }
+}
+
+async function handleCanvasClick(e) {
+  if (!_planImg || !_currentPlan) return;
+
+  // Coordonnées sur le plan (pas sur l'écran)
+  const rect = _canvas.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+
+  // Convertir en coordonnées plan
+  const planX = (clickX - _offsetX) / _scale;
+  const planY = (clickY - _offsetY) / _scale;
+
+  // Vérifier si on est sur le plan
+  if (planX < 0 || planY < 0 || planX > _planImg.naturalWidth || planY > _planImg.naturalHeight) {
+    return;
+  }
+
+  if (_placingMode) {
+    // Ouvrir le dialogue de sélection du point
+    await showPlacePointDialog(planX, planY);
+    return;
+  }
+
+  // Sinon : cliquer sur un marqueur existant
+  const missionId = State.get('currentMissionId');
+  const points = await PointDB.getByMission(missionId);
+
+  for (const point of points) {
+    if (!point.planPosition || point.planPosition.planId !== _currentPlan.id) continue;
+    const dx = point.planPosition.x - planX;
+    const dy = point.planPosition.y - planY;
+    if (Math.sqrt(dx * dx + dy * dy) < 20 / _scale) {
+      // Clic sur un capteur existant → ouvrir sa fiche
+      State.selectPoint(point.id);
+      State.navigate('terrain');
+      return;
+    }
+  }
+}
+
+async function showPlacePointDialog(planX, planY) {
+  const missionId = State.get('currentMissionId');
+  const config = State.getConfig();
+
+  // Récupérer les données existantes
+  const batiments = await BatimentDB.getByMission(missionId);
+  const zones = await ZoneDB.getByMission(missionId);
+  const points = await PointDB.getByMission(missionId);
+
+  // Créer le dialogue modal
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <h3>Placer un capteur</h3>
+
+      <div class="form-group">
+        <label class="form-label">Bâtiment</label>
+        <select id="modal-batiment" class="form-input">
+          <option value="__new__">+ Nouveau bâtiment</option>
+          ${batiments.map(b => `<option value="${b.id}">${b.data?.nom || 'Bâtiment ' + (b.order + 1)}</option>`).join('')}
+        </select>
+        <input type="text" id="modal-bat-name" class="form-input" placeholder="Nom du bâtiment"
+          style="margin-top:6px; ${batiments.length > 0 ? 'display:none' : ''}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">${config.type === 'CT' ? 'ZCS' : 'Zone Homogène'}</label>
+        <select id="modal-zone" class="form-input">
+          <option value="__new__">+ Nouvelle zone</option>
+          ${zones.map(z => `<option value="${z.id}">${z.data?.nom || z.data?.numero || 'Zone ' + (z.order + 1)}</option>`).join('')}
+        </select>
+        <input type="text" id="modal-zone-name" class="form-input" placeholder="N° ou nom de la zone"
+          style="margin-top:6px; ${zones.length > 0 ? 'display:none' : ''}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">N° Dosimètre</label>
+        <input type="text" id="modal-dosi-num" class="form-input" inputmode="numeric"
+          placeholder="Ex : 168082">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Lieu / Pièce</label>
+        <input type="text" id="modal-lieu" class="form-input"
+          placeholder="Ex : Salle de classe P4">
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-cancel">Annuler</button>
+        <button class="btn btn-primary" id="modal-confirm">Placer</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Toggle new bat name
+  const batSelect = modal.querySelector('#modal-batiment');
+  const batName = modal.querySelector('#modal-bat-name');
+  batSelect.addEventListener('change', () => {
+    batName.style.display = batSelect.value === '__new__' ? '' : 'none';
+  });
+
+  // Toggle new zone name
+  const zoneSelect = modal.querySelector('#modal-zone');
+  const zoneName = modal.querySelector('#modal-zone-name');
+  zoneSelect.addEventListener('change', () => {
+    zoneName.style.display = zoneSelect.value === '__new__' ? '' : 'none';
+  });
+
+  // Filter zones by batiment
+  batSelect.addEventListener('change', () => {
+    const batId = batSelect.value;
+    // Repopulate zone select
+    const filteredZones = batId === '__new__'
+      ? []
+      : zones.filter(z => z.batimentId === batId);
+
+    zoneSelect.innerHTML = `<option value="__new__">+ Nouvelle zone</option>` +
+      filteredZones.map(z => `<option value="${z.id}">${z.data?.nom || z.data?.numero || 'Zone ' + (z.order + 1)}</option>`).join('');
+    zoneName.style.display = '';
+  });
+
+  return new Promise((resolve) => {
+    modal.querySelector('#modal-cancel').addEventListener('click', () => {
+      modal.remove();
+      resolve(null);
+    });
+
+    modal.querySelector('#modal-confirm').addEventListener('click', async () => {
+      try {
+        let batId = batSelect.value;
+        let zoneId = zoneSelect.value;
+
+        // Créer bâtiment si nécessaire
+        if (batId === '__new__') {
+          const name = batName.value.trim() || 'Bâtiment';
+          const bat = await BatimentDB.create(missionId, { data: { nom: name } });
+          batId = bat.id;
+        }
+
+        // Créer zone si nécessaire
+        if (zoneId === '__new__') {
+          const name = zoneName.value.trim() || String(zones.length + 1);
+          const zone = await ZoneDB.create(batId, missionId, {
+            data: config.type === 'CT' ? { nom: name } : { numero: name }
+          });
+          zoneId = zone.id;
+        }
+
+        // Créer le point de mesure
+        const dosiNum = modal.querySelector('#modal-dosi-num').value.trim();
+        const lieu = modal.querySelector('#modal-lieu').value.trim();
+
+        const pointData = config.type === 'CT'
+          ? { num_detecteur: dosiNum, lieu_pose: lieu }
+          : { num_dosimetrie: dosiNum, nom_piece: lieu };
+
+        const point = await PointDB.create(zoneId, batId, missionId, {
+          data: pointData,
+          planPosition: { planId: _currentPlan.id, x: planX, y: planY },
+        });
+
+        modal.remove();
+        _placingMode = false;
+        $('#btn-place-mode').textContent = '📌 Placer capteur';
+        $('#btn-place-mode').classList.remove('active');
+
+        drawPlan();
+        State.toast(`Capteur ${dosiNum || ''} placé`, 'success');
+        resolve(point);
+      } catch (err) {
+        State.toast('Erreur : ' + err.message, 'error');
+        resolve(null);
+      }
+    });
+  });
+}
+
+// ── Zoom & Pan ──────────────────────────────────────────────
+
+function zoom(factor) {
+  const cx = _canvas.width / 2;
+  const cy = _canvas.height / 2;
+  _offsetX = cx - (cx - _offsetX) * factor;
+  _offsetY = cy - (cy - _offsetY) * factor;
+  _scale *= factor;
+  drawPlan();
+}
+
+function zoomFit() {
+  if (!_planImg || !_canvas) return;
+
+  const wrap = $('#plan-canvas-wrap');
+  if (!wrap) return;
+
+  const wW = wrap.clientWidth;
+  const wH = wrap.clientHeight;
+  const iW = _planImg.naturalWidth;
+  const iH = _planImg.naturalHeight;
+
+  if (!iW || !iH) return;
+
+  _scale = Math.min(wW / iW, wH / iH) * 0.95;
+  _offsetX = (wW - iW * _scale) / 2;
+  _offsetY = (wH - iH * _scale) / 2;
+
+  drawPlan();
+}
+
+function handleWheel(e) {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  zoom(factor);
+}
+
+function handleMouseDown(e) {
+  if (_placingMode) return;
+  _isDragging = true;
+  _lastTouch = { x: e.clientX, y: e.clientY };
+}
+
+function handleMouseMove(e) {
+  if (!_isDragging || !_lastTouch) return;
+  _offsetX += e.clientX - _lastTouch.x;
+  _offsetY += e.clientY - _lastTouch.y;
+  _lastTouch = { x: e.clientX, y: e.clientY };
+  drawPlan();
+}
+
+function handleMouseUp() {
+  _isDragging = false;
+  _lastTouch = null;
+}
+
+// ── Touch (mobile) ──────────────────────────────────────────
+
+let _pinchDist = 0;
+
+function handleTouchStart(e) {
+  if (_placingMode && e.touches.length === 1) return; // Laisser le click handler
+  e.preventDefault();
+
+  if (e.touches.length === 1) {
+    _isDragging = true;
+    _lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  } else if (e.touches.length === 2) {
+    _pinchDist = getTouchDist(e.touches);
+  }
+}
+
+function handleTouchMove(e) {
+  e.preventDefault();
+
+  if (e.touches.length === 1 && _isDragging && _lastTouch && !_placingMode) {
+    const dx = e.touches[0].clientX - _lastTouch.x;
+    const dy = e.touches[0].clientY - _lastTouch.y;
+    _offsetX += dx;
+    _offsetY += dy;
+    _lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    drawPlan();
+  } else if (e.touches.length === 2) {
+    const newDist = getTouchDist(e.touches);
+    const factor = newDist / _pinchDist;
+    zoom(factor);
+    _pinchDist = newDist;
+  }
+}
+
+function handleTouchEnd(e) {
+  _isDragging = false;
+  _lastTouch = null;
+}
+
+function getTouchDist(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// ── Export PNG annoté ───────────────────────────────────────
+
+async function exportAnnotatedPNG() {
+  if (!_planImg) {
+    State.toast('Pas de plan chargé', 'error');
+    return;
+  }
+
+  State.setLoading(true);
+
+  try {
+    // Créer un canvas haute résolution
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = _planImg.naturalWidth;
+    exportCanvas.height = _planImg.naturalHeight;
+    const exportCtx = exportCanvas.getContext('2d');
+
+    // Dessiner le plan
+    exportCtx.drawImage(_planImg, 0, 0);
+
+    // Dessiner les marqueurs
+    const missionId = State.get('currentMissionId');
+    const points = await PointDB.getByMission(missionId);
+    const zones  = await ZoneDB.getByMission(missionId);
+    const config = State.getConfig();
+
+    for (const point of points) {
+      if (!point.planPosition || point.planPosition.planId !== _currentPlan.id) continue;
+
+      const { x, y } = point.planPosition;
+
+      // Couleur
+      let color = '#3498db';
+      const result = point.resultats;
+      if (result) {
+        const val = parseFloat(result.activite_bqm3 || result.concentration || 0);
+        if (val > 0) {
+          if (val < 300) color = config.seuils.couleurs.vert.color;
+          else if (val < 1000) color = config.seuils.couleurs.orange.color;
+          else color = config.seuils.couleurs.rouge.color;
+        }
+      }
+
+      const zone = zones.find(z => z.id === point.zoneId);
+      const zoneLabel = zone?.data?.nom || zone?.data?.numero || '?';
+      const numDosi = point.data?.num_detecteur || point.data?.num_dosimetrie || '';
+
+      // Marqueur
+      const r = 20;
+      exportCtx.beginPath();
+      exportCtx.arc(x, y, r, 0, Math.PI * 2);
+      exportCtx.fillStyle = color;
+      exportCtx.fill();
+      exportCtx.strokeStyle = '#fff';
+      exportCtx.lineWidth = 3;
+      exportCtx.stroke();
+
+      // Texte dosimètre
+      exportCtx.fillStyle = '#fff';
+      exportCtx.font = 'bold 12px sans-serif';
+      exportCtx.textAlign = 'center';
+      exportCtx.textBaseline = 'middle';
+      exportCtx.fillText(numDosi.slice(-5), x, y);
+
+      // Zone label
+      exportCtx.fillStyle = color;
+      exportCtx.font = 'bold 14px sans-serif';
+      exportCtx.textBaseline = 'bottom';
+      exportCtx.fillText(`Z${zoneLabel}`, x, y - r - 4);
+
+      // Résultat
+      if (result) {
+        const val = result.activite_bqm3 || result.concentration;
+        if (val) {
+          exportCtx.fillStyle = '#333';
+          exportCtx.font = '12px sans-serif';
+          exportCtx.textBaseline = 'top';
+          exportCtx.fillText(`${val} Bq/m³`, x, y + r + 4);
+        }
+      }
+    }
+
+    // Télécharger
+    const dataUrl = exportCanvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    const mission = await (await import('./database.js')).MissionDB.getById(missionId);
+    const dossier = mission?.entree?.numero_dossier || 'plan';
+    link.download = `Plan_Radon_${dossier}.png`;
+    link.href = dataUrl;
+    link.click();
+
+    State.toast('Plan exporté en PNG', 'success');
+  } catch (err) {
+    State.toast('Erreur export : ' + err.message, 'error');
+  }
+
+  State.setLoading(false);
+}
