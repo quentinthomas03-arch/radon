@@ -23,10 +23,11 @@ export function renderPlan() {
 
   return `
     <div class="plan-toolbar">
-      <label class="btn btn-sm btn-secondary" for="plan-file-input" style="cursor:pointer;margin:0;">
+      <label class="btn btn-sm btn-secondary" style="cursor:pointer;position:relative;overflow:hidden;margin:0;">
         📷 Charger plan
+        <input type="file" id="plan-file-input" accept="image/*,application/pdf"
+          style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:0;">
       </label>
-      <input type="file" id="plan-file-input" accept="image/*,application/pdf" style="display:none">
       <button class="btn btn-sm btn-secondary" id="btn-place-mode">📌 Placer capteur</button>
       <span id="plan-info" class="plan-info" style="flex:1;text-align:right;font-size:.78rem;color:var(--text-dim)"></span>
       <div class="plan-zoom">
@@ -115,7 +116,7 @@ function bindPlanEvents() {
 // ── Charger l'image du plan ─────────────────────────────
 
 async function loadPlanImage(file) {
-  State.toast('Chargement du plan…', 'info', 0);
+  const toastId = State.toast('Chargement du plan…', 'info', 15000);
 
   try {
     let dataUrl;
@@ -155,10 +156,12 @@ async function loadPlanImage(file) {
 
     fitToView();
     redraw();
+    State.dismissToast(toastId);
     State.toast('Plan chargé ✓', 'success', 2000);
   } catch (err) {
     console.error('loadPlanImage:', err);
-    State.toast('Erreur : ' + err.message, 'error', 3000);
+    State.dismissToast(toastId);
+    State.toast('Erreur : ' + err.message, 'error', 4000);
   }
 }
 
