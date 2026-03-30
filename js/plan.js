@@ -23,9 +23,12 @@ export function renderPlan() {
 
   return `
     <div class="plan-toolbar">
-      <button class="btn btn-sm btn-secondary" id="btn-load-plan">📷 Charger plan</button>
+      <div style="position:relative;display:inline-flex;flex-shrink:0;">
+        <button class="btn btn-sm btn-secondary" style="pointer-events:none;">📷 Charger plan</button>
+        <input type="file" id="plan-file-input" accept="image/*,application/pdf"
+          style="position:absolute;inset:-6px;width:calc(100% + 12px);height:calc(100% + 12px);opacity:0;cursor:pointer;z-index:10;">
+      </div>
       <button class="btn btn-sm btn-secondary" id="btn-place-mode">📌 Placer capteur</button>
-      <input type="file" id="plan-file-input" accept="image/*" style="display:none">
       <span id="plan-info" class="plan-info" style="flex:1;text-align:right;font-size:.78rem;color:var(--text-dim)"></span>
       <div class="plan-zoom">
         <button class="btn-icon" id="btn-zoom-in" title="Zoom +">+</button>
@@ -36,9 +39,9 @@ export function renderPlan() {
     <div class="plan-canvas-wrap" id="plan-canvas-wrap">
       <canvas id="plan-canvas"></canvas>
       <div class="plan-empty" id="plan-empty">
-        <div class="plan-empty-icon">📐</div>
-        <div>Aucun plan chargé</div>
-        <div class="text-sm">Cliquez « Charger plan » pour importer une image</div>
+        <div class="plan-empty-icon">📂</div>
+        <div style="font-weight:600;">Appuyer pour charger un plan</div>
+        <div class="text-sm">Image JPG/PNG ou PDF</div>
       </div>
     </div>
   `;
@@ -70,15 +73,18 @@ function bindPlanEvents() {
     tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
   });
 
-  // Charger une image
-  $('#btn-load-plan')?.addEventListener('click', () => {
-    $('#plan-file-input')?.click();
-  });
-
-  $('#plan-file-input')?.addEventListener('change', async (e) => {
+  // Charger un plan — change sur l'input de la toolbar
+  const onFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
     await loadPlanImage(file);
+  };
+  $('#plan-file-input')?.addEventListener('change', onFileChange);
+
+  // Zone vide cliquable : appel direct de click() depuis l'événement utilisateur
+  $('#plan-empty')?.addEventListener('click', () => {
+    $('#plan-file-input')?.click();
   });
 
   // Mode placement
@@ -115,43 +121,89 @@ function bindPlanEvents() {
 // ── Charger l'image du plan ─────────────────────────────
 
 async function loadPlanImage(file) {
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    const dataUrl = e.target.result;
+  const toastId = State.toast('Chargement du plan…', 'info', 15000);
+
+  try {
+    let dataUrl;
+
+    if (file.type === 'application/pdf') {
+      dataUrl = await pdfToDataUrl(file);
+    } else {
+      dataUrl = await fileToDataUrl(file);
+    }
 
     const img = new Image();
-    img.onload = async () => {
-      _planImage = img;
-      $('#plan-empty')?.classList.add('hidden');
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('Image invalide'));
+      img.src = dataUrl;
+    });
 
-      // Sauvegarder dans IndexedDB
-      const missionId = State.get('currentMissionId');
-      if (missionId) {
-        const plans = await PlanDB.getByMission(missionId);
-        if (plans.length > 0) {
-          await PlanDB.update(plans[0].id, {
-            imageData: dataUrl,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            name: file.name,
-          });
-        } else {
-          await PlanDB.create(missionId, {
-            imageData: dataUrl,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            name: file.name,
-          });
-        }
+    _planImage = img;
+    $('#plan-empty')?.classList.add('hidden');
+
+    // Sauvegarder dans IndexedDB
+    const missionId = State.get('currentMissionId');
+    if (missionId) {
+      const plans = await PlanDB.getByMission(missionId);
+      const planData = {
+        imageData: dataUrl,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        name: file.name,
+      };
+      if (plans.length > 0) {
+        await PlanDB.update(plans[0].id, planData);
+      } else {
+        await PlanDB.create(missionId, planData);
       }
+    }
 
-      fitToView();
-      redraw();
-      State.toast('Plan chargé', 'success', 1500);
-    };
-    img.src = dataUrl;
-  };
-  reader.readAsDataURL(file);
+    fitToView();
+    redraw();
+    State.dismissToast(toastId);
+    State.toast('Plan chargé ✓', 'success', 2000);
+  } catch (err) {
+    console.error('loadPlanImage:', err);
+    State.dismissToast(toastId);
+    State.toast('Erreur : ' + err.message, 'error', 4000);
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(new Error('Lecture fichier impossible'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function pdfToDataUrl(file) {
+  // Chargement dynamique de pdf.js
+  if (!window.pdfjsLib) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('pdf.js non disponible'));
+      document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+
+  const viewport = page.getViewport({ scale: 2.0 }); // résolution x2 pour la qualité
+  const canvas = document.createElement('canvas');
+  canvas.width  = viewport.width;
+  canvas.height = viewport.height;
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return canvas.toDataURL('image/png');
 }
 
 async function loadPlanFromDB() {
