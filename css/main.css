@@ -525,18 +525,32 @@ select.form-input { padding-right: 30px; }
   align-items: center;
 }
 
+.plan-file-btn-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .plan-zoom {
   display: flex;
   gap: 4px;
   margin-left: auto;
 }
 
+.plan-status-bar {
+  font-size: .78rem;
+  padding: 4px 0 6px;
+  min-height: 22px;
+}
+.status-locked { color: var(--warning); }
+.status-nav    { color: var(--text-dim); }
+
 .plan-canvas-wrap {
   position: relative;
   width: 100%;
-  height: calc(100dvh - 220px);
-  min-height: 300px;
-  background: #1a1a1a;
+  height: calc(100dvh - 240px);
+  min-height: 280px;
+  background: #111;
   border-radius: var(--radius);
   clip-path: inset(0 round var(--radius));
   touch-action: none;
@@ -546,6 +560,7 @@ select.form-input { padding-right: 30px; }
   width: 100%;
   height: 100%;
   display: block;
+  cursor: grab;
 }
 
 .plan-empty {
@@ -564,10 +579,107 @@ select.form-input { padding-right: 30px; }
 .plan-empty-icon { font-size: 3rem; opacity: .5; }
 .plan-empty .text-sm { font-size: .8rem; }
 
-#btn-place-mode.active {
+/* Bouton verrou actif */
+#btn-lock.active {
   background: var(--warning);
   color: #0f1117;
   border-color: var(--warning);
+}
+#btn-lock:disabled,
+#btn-rotate-left:disabled,
+#btn-rotate-right:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* ── Modal capteur (plan) ──────────────────────────────────── */
+
+.plan-modal {
+  max-width: 520px;
+  max-height: 92dvh;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.plan-modal-badge {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: .7rem;
+  font-weight: 700;
+  background: var(--accent);
+  color: #0f1117;
+}
+
+.plan-modal-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-modal-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--accent);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.plan-modal-section-title::marker,
+.plan-modal-section-title::-webkit-details-marker { display: none; }
+.plan-modal-section-title::before {
+  content: '▾';
+  font-size: .75rem;
+  transition: transform .15s;
+}
+details.plan-modal-section:not([open]) .plan-modal-section-title::before {
+  transform: rotate(-90deg);
+}
+
+.plan-modal-section-body {
+  padding: 8px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+/* Scrollable content zone */
+.plan-modal > details {
+  overflow-y: auto;
+}
+
+.plan-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.form-input-sm {
+  padding: 7px 10px;
+  font-size: .85rem;
 }
 
 /* ── Results ───────────────────────────────────────────────── */

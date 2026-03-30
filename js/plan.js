@@ -1,6 +1,6 @@
 // ============================================================
 // plan.js — Vue Plan interactif
-// Charger un plan, placer des capteurs, cliquer pour ouvrir la fiche
+// Charger un plan · Pivoter · Zoomer · Verrouiller · Placer capteurs
 // ============================================================
 
 import * as State from './state.js';
@@ -9,47 +9,53 @@ import { PlanDB, PointDB, ZoneDB, BatimentDB } from './database.js';
 const $ = (sel, ctx = document) => ctx.querySelector(sel);
 const $$ = (sel, ctx = document) => ctx.querySelectorAll(sel);
 
-let _planImage = null;    // Image object chargée
-let _transform = { x: 0, y: 0, scale: 1 };
-let _dragging = false;
+let _planImage = null;
+// cx, cy = centre de l'image en coordonnées canvas (px CSS)
+let _transform = { cx: 0, cy: 0, scale: 1, rotation: 0 };
+let _locked    = false;   // verrouillé = mode placement ; déverrouillé = navigation
+let _dragging  = false;
 let _dragStart = { x: 0, y: 0 };
-let _placeMode = false;
+let _pinch     = null;    // état du pinch actif
 
-// ── Rendu HTML ───────────────────────────────────────────
+// ── HTML ─────────────────────────────────────────────────────
 
 export function renderPlan() {
-  const config = State.getConfig();
-  if (!config) return '<p>Aucune mission chargée</p>';
-
   return `
     <div class="plan-toolbar">
-      <div style="position:relative;display:inline-flex;flex-shrink:0;">
-        <button class="btn btn-sm btn-secondary" style="pointer-events:none;">📷 Charger plan</button>
+      <div class="plan-file-btn-wrap">
+        <button class="btn btn-sm btn-secondary" style="pointer-events:none;">📷 Plan</button>
         <input type="file" id="plan-file-input" accept="image/*,application/pdf"
           style="position:absolute;inset:-6px;width:calc(100% + 12px);height:calc(100% + 12px);opacity:0;cursor:pointer;z-index:10;">
       </div>
-      <button class="btn btn-sm btn-secondary" id="btn-place-mode">📌 Placer capteur</button>
-      <span id="plan-info" class="plan-info" style="flex:1;text-align:right;font-size:.78rem;color:var(--text-dim)"></span>
+      <button class="btn btn-sm btn-secondary" id="btn-rotate-left"  title="Rotation −90°">↺</button>
+      <button class="btn btn-sm btn-secondary" id="btn-rotate-right" title="Rotation +90°">↻</button>
+      <button class="btn btn-sm btn-secondary" id="btn-lock">🔓 Verrouiller</button>
       <div class="plan-zoom">
-        <button class="btn-icon" id="btn-zoom-in" title="Zoom +">+</button>
-        <button class="btn-icon" id="btn-zoom-reset" title="Réinitialiser">⟲</button>
-        <button class="btn-icon" id="btn-zoom-out" title="Zoom −">−</button>
+        <button class="btn-icon" id="btn-zoom-in"    title="Zoom +">+</button>
+        <button class="btn-icon" id="btn-zoom-reset" title="Recadrer">⟲</button>
+        <button class="btn-icon" id="btn-zoom-out"   title="Zoom −">−</button>
       </div>
     </div>
+
+    <div class="plan-status-bar" id="plan-status-bar"></div>
+
     <div class="plan-canvas-wrap" id="plan-canvas-wrap">
       <canvas id="plan-canvas"></canvas>
       <div class="plan-empty" id="plan-empty">
         <div class="plan-empty-icon">📂</div>
-        <div style="font-weight:600;">Appuyer pour charger un plan</div>
-        <div class="text-sm">Image JPG/PNG ou PDF</div>
+        <div style="font-weight:600;margin-bottom:4px;">Appuyer pour charger un plan</div>
+        <div class="text-sm">Image JPG / PNG ou PDF</div>
       </div>
     </div>
   `;
 }
 
-// ── Initialisation après rendu ──────────────────────────
+// ── Init ─────────────────────────────────────────────────────
 
 export function initPlan() {
+  // Reset de l'état inter-vues
+  _dragging = false;
+  _pinch    = null;
   setTimeout(() => {
     resizeCanvas();
     bindPlanEvents();
@@ -59,546 +65,683 @@ export function initPlan() {
 
 function bindPlanEvents() {
   const canvas = $('#plan-canvas');
-  const wrap = $('#plan-canvas-wrap');
+  const wrap   = $('#plan-canvas-wrap');
   if (!canvas || !wrap) return;
 
-  // Retour
+  // Navigation hors plan
   $('#btn-back-plan')?.addEventListener('click', () => {
-    State.clearMission();
-    State.navigate('home');
+    State.clearMission(); State.navigate('home');
   });
+  $$('.mission-nav-tab').forEach(tab =>
+    tab.addEventListener('click', () => State.navigate(tab.dataset.navView))
+  );
 
-  // Tabs navigation
-  $$('.mission-nav-tab').forEach(tab => {
-    tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
-  });
-
-  // Charger un plan — change sur l'input de la toolbar
-  const onFileChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Chargement fichier
+  $('#plan-file-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
     e.target.value = '';
     await loadPlanImage(file);
-  };
-  $('#plan-file-input')?.addEventListener('change', onFileChange);
+  });
+  $('#plan-empty')?.addEventListener('click', () => $('#plan-file-input')?.click());
 
-  // Zone vide cliquable : appel direct de click() depuis l'événement utilisateur
-  $('#plan-empty')?.addEventListener('click', () => {
-    $('#plan-file-input')?.click();
+  // Rotation (−90° / +90°)
+  $('#btn-rotate-left')?.addEventListener('click', () => {
+    if (_locked) return;
+    _transform.rotation -= Math.PI / 2;
+    redraw();
+  });
+  $('#btn-rotate-right')?.addEventListener('click', () => {
+    if (_locked) return;
+    _transform.rotation += Math.PI / 2;
+    redraw();
   });
 
-  // Mode placement
-  $('#btn-place-mode')?.addEventListener('click', () => {
-    _placeMode = !_placeMode;
-    const btn = $('#btn-place-mode');
-    btn.classList.toggle('active', _placeMode);
-    btn.textContent = _placeMode ? '✋ Annuler placement' : '📌 Placer capteur';
-    canvas.style.cursor = _placeMode ? 'crosshair' : 'grab';
+  // Verrou
+  $('#btn-lock')?.addEventListener('click', () => setLocked(!_locked));
+
+  // Zoom boutons
+  $('#btn-zoom-in')?.addEventListener('click', () => {
+    if (_locked) return;
+    applyZoom(1.3, canvasCenterX(), canvasCenterY());
+  });
+  $('#btn-zoom-out')?.addEventListener('click', () => {
+    if (_locked) return;
+    applyZoom(1 / 1.3, canvasCenterX(), canvasCenterY());
+  });
+  $('#btn-zoom-reset')?.addEventListener('click', () => {
+    if (_locked) return;
+    fitToView(); redraw();
   });
 
-  // Zoom
-  $('#btn-zoom-in')?.addEventListener('click', () => { _transform.scale *= 1.3; redraw(); });
-  $('#btn-zoom-out')?.addEventListener('click', () => { _transform.scale /= 1.3; redraw(); });
-  $('#btn-zoom-reset')?.addEventListener('click', () => { fitToView(); redraw(); });
-
-  // Canvas interactions
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
+  // Souris / stylet
+  canvas.addEventListener('pointerdown',  onPointerDown);
+  canvas.addEventListener('pointermove',  onPointerMove);
+  canvas.addEventListener('pointerup',    onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
   canvas.addEventListener('wheel', onWheel, { passive: false });
 
-  // Touch-friendly
-  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  // Touch (pinch + tap)
+  canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+  canvas.addEventListener('touchmove',  onTouchMove,  { passive: false });
+  canvas.addEventListener('touchend',   onTouchEnd,   { passive: false });
 
-  // Resize
-  const ro = new ResizeObserver(() => {
-    resizeCanvas();
-    redraw();
-  });
-  ro.observe(wrap);
+  // Resize observeur
+  new ResizeObserver(() => { resizeCanvas(); redraw(); }).observe(wrap);
 }
 
-// ── Charger l'image du plan ─────────────────────────────
+// ── Verrou ───────────────────────────────────────────────────
 
-async function loadPlanImage(file) {
-  const toastId = State.toast('Chargement du plan…', 'info', 15000);
+function setLocked(locked) {
+  _locked = locked;
+  const btn    = $('#btn-lock');
+  const canvas = $('#plan-canvas');
 
-  try {
-    let dataUrl;
-
-    if (file.type === 'application/pdf') {
-      dataUrl = await pdfToDataUrl(file);
-    } else {
-      dataUrl = await fileToDataUrl(file);
-    }
-
-    const img = new Image();
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = () => reject(new Error('Image invalide'));
-      img.src = dataUrl;
-    });
-
-    _planImage = img;
-    $('#plan-empty')?.classList.add('hidden');
-
-    // Sauvegarder dans IndexedDB
-    const missionId = State.get('currentMissionId');
-    if (missionId) {
-      const plans = await PlanDB.getByMission(missionId);
-      const planData = {
-        imageData: dataUrl,
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-        name: file.name,
-      };
-      if (plans.length > 0) {
-        await PlanDB.update(plans[0].id, planData);
-      } else {
-        await PlanDB.create(missionId, planData);
-      }
-    }
-
-    fitToView();
-    redraw();
-    State.dismissToast(toastId);
-    State.toast('Plan chargé ✓', 'success', 2000);
-  } catch (err) {
-    console.error('loadPlanImage:', err);
-    State.dismissToast(toastId);
-    State.toast('Erreur : ' + err.message, 'error', 4000);
+  if (btn) {
+    btn.textContent = locked ? '🔒 Verrouillé' : '🔓 Verrouiller';
+    btn.classList.toggle('active', locked);
   }
-}
+  if (canvas) canvas.style.cursor = locked ? 'crosshair' : 'grab';
 
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target.result);
-    reader.onerror = () => reject(new Error('Lecture fichier impossible'));
-    reader.readAsDataURL(file);
+  // Désactiver rotation/zoom quand verrouillé
+  ['btn-rotate-left','btn-rotate-right','btn-zoom-in','btn-zoom-out','btn-zoom-reset'].forEach(id => {
+    const el = $(`#${id}`);
+    if (el) el.disabled = locked;
   });
+
+  redraw();
 }
 
-async function pdfToDataUrl(file) {
-  // Chargement dynamique de pdf.js
-  if (!window.pdfjsLib) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-      s.onload = resolve;
-      s.onerror = () => reject(new Error('pdf.js non disponible'));
-      document.head.appendChild(s);
-    });
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  }
+// ── Coordonnées ──────────────────────────────────────────────
 
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const page = await pdf.getPage(1);
-
-  const viewport = page.getViewport({ scale: 2.0 }); // résolution x2 pour la qualité
-  const canvas = document.createElement('canvas');
-  canvas.width  = viewport.width;
-  canvas.height = viewport.height;
-
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-  return canvas.toDataURL('image/png');
+function canvasCSSSize() {
+  const c = $('#plan-canvas');
+  if (!c) return { w: 0, h: 0 };
+  return { w: c.width / window.devicePixelRatio, h: c.height / window.devicePixelRatio };
 }
+function canvasCenterX() { return canvasCSSSize().w / 2; }
+function canvasCenterY() { return canvasCSSSize().h / 2; }
 
-async function loadPlanFromDB() {
-  const missionId = State.get('currentMissionId');
-  if (!missionId) return;
-
-  const plans = await PlanDB.getByMission(missionId);
-  if (plans.length === 0 || !plans[0].imageData) return;
-
-  const plan = plans[0];
-  const img = new Image();
-  img.onload = () => {
-    _planImage = img;
-    $('#plan-empty')?.classList.add('hidden');
-    fitToView();
-    redraw();
+/** Image coords → canvas coords (CSS px) */
+function imageToCanvas(imgX, imgY) {
+  const img = _planImage; if (!img) return { x: 0, y: 0 };
+  const dx  = imgX - img.naturalWidth  / 2;
+  const dy  = imgY - img.naturalHeight / 2;
+  const cos = Math.cos(_transform.rotation);
+  const sin = Math.sin(_transform.rotation);
+  const s   = _transform.scale;
+  return {
+    x: _transform.cx + (dx * cos - dy * sin) * s,
+    y: _transform.cy + (dx * sin + dy * cos) * s,
   };
-  img.src = plan.imageData;
 }
 
-// ── Canvas sizing ───────────────────────────────────────
+/** Canvas coords → image coords */
+function canvasToImage(cx, cy) {
+  const img = _planImage; if (!img) return { x: 0, y: 0 };
+  const s   = _transform.scale;
+  const dx  = (cx - _transform.cx) / s;
+  const dy  = (cy - _transform.cy) / s;
+  const rot = -_transform.rotation;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  return {
+    x: dx * cos - dy * sin + img.naturalWidth  / 2,
+    y: dx * sin + dy * cos + img.naturalHeight / 2,
+  };
+}
+
+function getCanvasPos(e) {
+  const rect = $('#plan-canvas').getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function applyZoom(factor, pivotX, pivotY) {
+  const newScale = Math.max(0.1, Math.min(12, _transform.scale * factor));
+  const ratio    = newScale / _transform.scale;
+  _transform.cx  = pivotX + (_transform.cx - pivotX) * ratio;
+  _transform.cy  = pivotY + (_transform.cy - pivotY) * ratio;
+  _transform.scale = newScale;
+  redraw();
+}
+
+// ── Canvas sizing ────────────────────────────────────────────
 
 function resizeCanvas() {
   const canvas = $('#plan-canvas');
-  const wrap = $('#plan-canvas-wrap');
+  const wrap   = $('#plan-canvas-wrap');
   if (!canvas || !wrap) return;
-
   const rect = wrap.getBoundingClientRect();
-  canvas.width = rect.width * window.devicePixelRatio;
+  canvas.width  = rect.width  * window.devicePixelRatio;
   canvas.height = rect.height * window.devicePixelRatio;
-  canvas.style.width = rect.width + 'px';
+  canvas.style.width  = rect.width  + 'px';
   canvas.style.height = rect.height + 'px';
 }
 
 function fitToView() {
-  const canvas = $('#plan-canvas');
-  if (!canvas || !_planImage) return;
-
-  const cw = canvas.width / window.devicePixelRatio;
-  const ch = canvas.height / window.devicePixelRatio;
+  const canvas = $('#plan-canvas'); if (!canvas || !_planImage) return;
+  const { w: cw, h: ch } = canvasCSSSize();
   const iw = _planImage.naturalWidth;
   const ih = _planImage.naturalHeight;
-
-  const scale = Math.min(cw / iw, ch / ih) * 0.9;
-  _transform.scale = scale;
-  _transform.x = (cw - iw * scale) / 2;
-  _transform.y = (ch - ih * scale) / 2;
+  // Tenir compte de la rotation pour le fit
+  const rot = ((_transform.rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const swapped = (rot > Math.PI / 4 && rot < 3 * Math.PI / 4) ||
+                  (rot > 5 * Math.PI / 4 && rot < 7 * Math.PI / 4);
+  _transform.scale = Math.min(cw / (swapped ? ih : iw), ch / (swapped ? iw : ih)) * 0.90;
+  _transform.cx = cw / 2;
+  _transform.cy = ch / 2;
 }
 
-// ── Dessin ──────────────────────────────────────────────
+// ── Dessin ───────────────────────────────────────────────────
 
 async function redraw() {
-  const canvas = $('#plan-canvas');
-  if (!canvas) return;
-
+  const canvas = $('#plan-canvas'); if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  if (!_planImage) return;
+  if (_planImage) {
+    const iw = _planImage.naturalWidth;
+    const ih = _planImage.naturalHeight;
+    ctx.save();
+    ctx.translate(_transform.cx, _transform.cy);
+    ctx.rotate(_transform.rotation);
+    ctx.scale(_transform.scale, _transform.scale);
+    ctx.drawImage(_planImage, -iw / 2, -ih / 2);
+    ctx.restore();
 
-  // Dessiner l'image
-  ctx.save();
-  ctx.translate(_transform.x, _transform.y);
-  ctx.scale(_transform.scale, _transform.scale);
-  ctx.drawImage(_planImage, 0, 0);
-  ctx.restore();
+    // Bordure dorée quand verrouillé
+    if (_locked) {
+      const { w: cw, h: ch } = canvasCSSSize();
+      ctx.strokeStyle = 'rgba(212,165,32,0.7)';
+      ctx.lineWidth   = 3;
+      ctx.setLineDash([10, 6]);
+      ctx.strokeRect(2, 2, cw - 4, ch - 4);
+      ctx.setLineDash([]);
+    }
+  }
 
-  // Dessiner les points de mesure
-  const missionId = State.get('currentMissionId');
-  if (!missionId) return;
+  // Capteurs
+  await drawSensors(ctx);
+  updateStatusBar();
+}
 
+async function drawSensors(ctx) {
+  const missionId = State.get('currentMissionId'); if (!missionId) return;
   const points = await PointDB.getByMission(missionId);
-  const config = State.getConfig();
-  const isCT = config?.type === 'CT';
+  const isCT   = State.getConfig()?.type === 'CT';
 
   for (const point of points) {
     if (!point.planPosition) continue;
-
-    const px = _transform.x + point.planPosition.x * _transform.scale;
-    const py = _transform.y + point.planPosition.y * _transform.scale;
+    const { x: px, y: py } = imageToCanvas(point.planPosition.x, point.planPosition.y);
 
     // Couleur selon résultat
-    const valKey = isCT ? 'activite_bqm3' : 'concentration';
-    const val = parseFloat(point.resultats?.[valKey] || '');
-    let color = '#4a9eff'; // bleu par défaut
-    if (!isNaN(val)) {
-      if (val < 300) color = '#27ae60';
-      else if (val < 1000) color = '#f39c12';
-      else color = '#e74c3c';
-    }
+    const val   = parseFloat(point.resultats?.[isCT ? 'activite_bqm3' : 'concentration'] || '');
+    const color = isNaN(val) ? '#4a9eff' : val < 300 ? '#27ae60' : val < 1000 ? '#f39c12' : '#e74c3c';
 
-    // Cercle
+    // Ombre portée
     ctx.beginPath();
-    ctx.arc(px, py, 14, 0, Math.PI * 2);
+    ctx.arc(px + 2, py + 2, 15, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,.35)';
+    ctx.fill();
+
+    // Cercle principal
+    ctx.beginPath();
+    ctx.arc(px, py, 15, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth   = 2.5;
     ctx.stroke();
 
     // Numéro
-    const num = point.data?.num_detecteur || point.data?.num_dosimetrie || (point.order + 1);
-    const label = String(num).slice(-4);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, px, py);
+    const num = point.data?.num_detecteur || point.data?.num_dosimetrie || String(point.order + 1);
+    ctx.fillStyle     = '#fff';
+    ctx.font          = 'bold 11px sans-serif';
+    ctx.textAlign     = 'center';
+    ctx.textBaseline  = 'middle';
+    ctx.fillText(String(num).slice(0, 5), px, py);
 
-    // Nom de la pièce en dessous
+    // Label pièce
     const lieu = point.data?.lieu_pose || point.data?.nom_piece || '';
     if (lieu) {
-      ctx.fillStyle = 'rgba(0,0,0,.7)';
-      const tw = ctx.measureText(lieu).width + 8;
-      ctx.fillRect(px - tw / 2, py + 16, tw, 16);
-      ctx.fillStyle = '#fff';
       ctx.font = '10px sans-serif';
-      ctx.fillText(lieu, px, py + 24);
+      const tw = ctx.measureText(lieu).width + 8;
+      ctx.fillStyle = 'rgba(0,0,0,.78)';
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(px - tw / 2, py + 18, tw, 16, 3);
+      else ctx.rect(px - tw / 2, py + 18, tw, 16);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.fillText(lieu, px, py + 26);
     }
   }
+}
 
-  // Info
-  const info = $('#plan-info');
-  if (info) {
-    const placedCount = points.filter(p => p.planPosition).length;
-    info.textContent = `${placedCount} / ${points.length} capteur(s) placé(s)`;
+// ── Barre de statut ──────────────────────────────────────────
+
+async function updateStatusBar() {
+  const bar = $('#plan-status-bar'); if (!bar) return;
+  if (!_planImage) { bar.innerHTML = ''; return; }
+
+  const missionId = State.get('currentMissionId');
+  const points    = missionId ? await PointDB.getByMission(missionId) : [];
+  const placed    = points.filter(p => p.planPosition).length;
+
+  if (_locked) {
+    bar.innerHTML = `<span class="status-locked">🔒 Verrouillé — ${placed} capteur(s) — Tapez sur le plan pour en ajouter</span>`;
+  } else {
+    bar.innerHTML = `<span class="status-nav">🔓 Navigation — ${placed} capteur(s) — Verrouillez pour placer des capteurs</span>`;
   }
 }
 
-// ── Interaction souris / touch ──────────────────────────
-
-function getCanvasPos(e) {
-  const canvas = $('#plan-canvas');
-  const rect = canvas.getBoundingClientRect();
-  return {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
-  };
-}
-
-function canvasToImage(cx, cy) {
-  return {
-    x: (cx - _transform.x) / _transform.scale,
-    y: (cy - _transform.y) / _transform.scale,
-  };
-}
+// ── Interactions souris ───────────────────────────────────────
 
 async function onPointerDown(e) {
+  if (e.pointerType === 'touch') return; // géré par les events touch
   const pos = getCanvasPos(e);
-
-  if (_placeMode && _planImage) {
-    // Placer un nouveau capteur
-    const imgPos = canvasToImage(pos.x, pos.y);
-    await placeNewPoint(imgPos.x, imgPos.y);
-    return;
+  await handleTap(pos.x, pos.y, e);
+  if (!_locked) {
+    _dragging  = true;
+    _dragStart = { x: pos.x - _transform.cx, y: pos.y - _transform.cy };
+    e.target.style.cursor = 'grabbing';
   }
-
-  // Vérifier si on clique sur un point existant
-  const clicked = await findPointAt(pos.x, pos.y);
-  if (clicked) {
-    openPointModal(clicked);
-    return;
-  }
-
-  // Sinon, démarrer le déplacement
-  _dragging = true;
-  _dragStart = { x: pos.x - _transform.x, y: pos.y - _transform.y };
-  e.target.style.cursor = 'grabbing';
 }
 
 function onPointerMove(e) {
-  if (!_dragging) return;
-  const pos = getCanvasPos(e);
-  _transform.x = pos.x - _dragStart.x;
-  _transform.y = pos.y - _dragStart.y;
+  if (!_dragging || _locked) return;
+  const pos     = getCanvasPos(e);
+  _transform.cx = pos.x - _dragStart.x;
+  _transform.cy = pos.y - _dragStart.y;
   redraw();
 }
 
 function onPointerUp(e) {
   _dragging = false;
-  e.target.style.cursor = _placeMode ? 'crosshair' : 'grab';
+  const c = $('#plan-canvas');
+  if (c) c.style.cursor = _locked ? 'crosshair' : 'grab';
 }
 
 function onWheel(e) {
   e.preventDefault();
+  if (_locked) return;
   const pos = getCanvasPos(e);
-  const delta = e.deltaY > 0 ? 0.9 : 1.1;
-
-  // Zoom centré sur le curseur
-  const oldScale = _transform.scale;
-  _transform.scale *= delta;
-  _transform.scale = Math.max(0.1, Math.min(10, _transform.scale));
-
-  const ratio = _transform.scale / oldScale;
-  _transform.x = pos.x - (pos.x - _transform.x) * ratio;
-  _transform.y = pos.y - (pos.y - _transform.y) * ratio;
-
-  redraw();
+  applyZoom(e.deltaY > 0 ? 0.9 : 1.1, pos.x, pos.y);
 }
 
-// ── Actions plan ───────────────────────────────────────
+// ── Interactions touch ────────────────────────────────────────
+
+function touchPos(t) {
+  const rect = $('#plan-canvas').getBoundingClientRect();
+  return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+}
+
+function pinchMid(t1, t2) {
+  const p1 = touchPos(t1), p2 = touchPos(t2);
+  return {
+    x: (p1.x + p2.x) / 2,
+    y: (p1.y + p2.y) / 2,
+    dist: Math.hypot(p2.x - p1.x, p2.y - p1.y),
+  };
+}
+
+// Détection d'un tap (vs glissé) — seuil 10 px
+let _touchStartPos  = null;
+let _touchStartTime = 0;
+
+async function onTouchStart(e) {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    const pos = touchPos(e.touches[0]);
+    _touchStartPos  = pos;
+    _touchStartTime = Date.now();
+    _pinch   = null;
+    _dragging = false;
+    _dragStart = { x: pos.x - _transform.cx, y: pos.y - _transform.cy };
+
+  } else if (e.touches.length === 2 && !_locked) {
+    _dragging = false;
+    const mp = pinchMid(e.touches[0], e.touches[1]);
+    _pinch = {
+      dist:       mp.dist,
+      midX:       mp.x,
+      midY:       mp.y,
+      startScale: _transform.scale,
+      startCx:    _transform.cx,
+      startCy:    _transform.cy,
+    };
+  }
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  if (e.touches.length === 2 && _pinch && !_locked) {
+    const mp    = pinchMid(e.touches[0], e.touches[1]);
+    const ratio = mp.dist / _pinch.dist;
+    const ns    = Math.max(0.1, Math.min(12, _pinch.startScale * ratio));
+    const sr    = ns / _pinch.startScale;
+    _transform.scale = ns;
+    _transform.cx = mp.x + (_pinch.startCx - _pinch.midX) * sr + (mp.x - _pinch.midX);
+    _transform.cy = mp.y + (_pinch.startCy - _pinch.midY) * sr + (mp.y - _pinch.midY);
+    redraw();
+
+  } else if (e.touches.length === 1 && !_locked && _touchStartPos) {
+    const pos = touchPos(e.touches[0]);
+    // Seuil pour distinguer tap vs drag
+    if (Math.hypot(pos.x - _touchStartPos.x, pos.y - _touchStartPos.y) > 8) {
+      _dragging  = true;
+      _touchStartPos = null; // annule la détection de tap
+    }
+    if (_dragging) {
+      _transform.cx = pos.x - _dragStart.x;
+      _transform.cy = pos.y - _dragStart.y;
+      redraw();
+    }
+  }
+}
+
+async function onTouchEnd(e) {
+  e.preventDefault();
+  if (e.touches.length < 2) _pinch = null;
+  if (e.touches.length === 0) {
+    const wasDragging = _dragging;
+    _dragging = false;
+
+    // C'est un tap si pas de glissé et < 300 ms
+    if (!wasDragging && _touchStartPos && Date.now() - _touchStartTime < 300) {
+      await handleTap(_touchStartPos.x, _touchStartPos.y, null);
+    }
+    _touchStartPos = null;
+  }
+}
+
+// ── Logique commune tap (souris + touch) ─────────────────────
+
+async function handleTap(cx, cy, pointerEvent) {
+  // Toujours : clic sur un capteur existant = ouvrir la fiche
+  const clicked = await findPointAt(cx, cy);
+  if (clicked) {
+    openPointModal(clicked);
+    return true;
+  }
+  // Mode placement (verrouillé uniquement)
+  if (_locked && _planImage) {
+    const imgPos = canvasToImage(cx, cy);
+    await placeNewPoint(imgPos.x, imgPos.y);
+    return true;
+  }
+  return false;
+}
+
+// ── Recherche capteur au point cliqué ────────────────────────
 
 async function findPointAt(cx, cy) {
-  const missionId = State.get('currentMissionId');
-  if (!missionId) return null;
-
-  const points = await PointDB.getByMission(missionId);
-  const hitRadius = 18;
-
+  const missionId = State.get('currentMissionId'); if (!missionId) return null;
+  const points    = await PointDB.getByMission(missionId);
   for (const point of points) {
     if (!point.planPosition) continue;
-    const px = _transform.x + point.planPosition.x * _transform.scale;
-    const py = _transform.y + point.planPosition.y * _transform.scale;
-    const dist = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
-    if (dist < hitRadius) return point;
+    const { x, y } = imageToCanvas(point.planPosition.x, point.planPosition.y);
+    if (Math.hypot(cx - x, cy - y) < 22) return point;
   }
   return null;
 }
 
-async function placeNewPoint(imgX, imgY) {
-  const missionId = State.get('currentMissionId');
-  if (!missionId) return;
+// ── Placer un nouveau capteur ─────────────────────────────────
 
-  // S'assurer qu'il y a au moins un bâtiment et une zone
-  let batiments = await BatimentDB.getByMission(missionId);
-  if (batiments.length === 0) {
-    const bat = await BatimentDB.create(missionId, { data: { nom: 'Bâtiment 1' } });
-    batiments = [bat];
-  }
-  const bat = batiments[0];
+async function placeNewPoint(imgX, imgY) {
+  const missionId = State.get('currentMissionId'); if (!missionId) return;
+
+  let bats = await BatimentDB.getByMission(missionId);
+  if (!bats.length) bats = [await BatimentDB.create(missionId, { data: { nom: 'Bâtiment 1' } })];
+  const bat = bats[0];
 
   let zones = await ZoneDB.getByBatiment(bat.id);
-  if (zones.length === 0) {
-    const config = State.getConfig();
-    const isCT = config?.type === 'CT';
-    const zone = await ZoneDB.create(bat.id, missionId, {
-      data: isCT ? { nom: '1' } : { numero: '1' },
-    });
-    zones = [zone];
+  if (!zones.length) {
+    const isCT = State.getConfig()?.type === 'CT';
+    zones = [await ZoneDB.create(bat.id, missionId, { data: isCT ? { nom: '1' } : { numero: '1' } })];
   }
-  const zone = zones[zones.length - 1]; // Dernière zone
+  const zone = zones[zones.length - 1];
 
-  // Créer le point
+  const today = new Date().toISOString().slice(0, 10);
   const point = await PointDB.create(zone.id, bat.id, missionId, {
     planPosition: { x: imgX, y: imgY },
+    data: { date_pose: today },
   });
 
-  // Ouvrir le formulaire
+  await redraw();
   openPointModal(point);
-
-  _placeMode = false;
-  const btn = $('#btn-place-mode');
-  if (btn) {
-    btn.classList.remove('active');
-    btn.textContent = '📌 Placer capteur';
-  }
-  const canvas = $('#plan-canvas');
-  if (canvas) canvas.style.cursor = 'grab';
-
-  redraw();
-  State.toast('Capteur placé — remplissez la fiche', 'info', 2000);
 }
 
-// ── Modal point de mesure ──────────────────────────────
+// ── Modal fiche capteur ───────────────────────────────────────
 
 async function openPointModal(point) {
-  const config = State.getConfig();
-  if (!config) return;
-
+  const config = State.getConfig(); if (!config) return;
   const isCT = config.type === 'CT';
 
-  // Récupérer zone et bâtiment
-  const zone = await ZoneDB.getById(point.zoneId);
-  const bat = await BatimentDB.getById(point.batimentId);
+  const zone     = await ZoneDB.getById(point.zoneId);
+  const bat      = await BatimentDB.getById(point.batimentId);
+  const allBats  = await BatimentDB.getByMission(State.get('currentMissionId'));
   const allZones = await ZoneDB.getByBatiment(point.batimentId);
-  const allBats = await BatimentDB.getByMission(State.get('currentMissionId'));
 
-  // Champs terrain
+  const zoneKey      = isCT ? 'zcs' : 'zone_homogene';
+  const zoneFields   = (config.tableau[zoneKey]?.fields || []).filter(f => f.id !== 'nom' && f.id !== 'numero');
   const terrainFields = config.tableau.point.fields.filter(f => f.phase === 'terrain');
+  const num = point.data?.num_detecteur || point.data?.num_dosimetrie || `#${point.order + 1}`;
 
-  // Champs zone
-  const zoneKey = isCT ? 'zcs' : 'zone_homogene';
-  const zoneFields = config.tableau[zoneKey]?.fields || [];
+  // Options bâtiments
+  const batOpts = allBats.map(b =>
+    `<option value="${b.id}" ${b.id === bat?.id ? 'selected' : ''}>${b.data?.nom || 'Bât.'}</option>`
+  ).join('');
+
+  // Options zones
+  const zoneOpts = allZones.map(z => {
+    const label = isCT
+      ? `ZCS ${z.data?.nom || ''} ${z.data?.niveau ? '— ' + z.data.niveau : ''}`
+      : `Zone ${z.data?.numero || ''} ${z.data?.niveau ? '— ' + z.data.niveau : ''}`;
+    return `<option value="${z.id}" ${z.id === zone?.id ? 'selected' : ''}>${label}</option>`;
+  }).join('');
 
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'point-modal';
 
-  // Générer le HTML des champs zone
-  const zoneFieldsHtml = zoneFields.map(f => {
-    const val = zone?.data?.[f.id] ?? '';
-    return renderModalField(f, val, 'zone-');
-  }).join('');
-
-  // Générer le HTML des champs point
-  const pointFieldsHtml = terrainFields.map(f => {
-    const val = point.data?.[f.id] ?? '';
-    return renderModalField(f, val, 'point-');
-  }).join('');
-
   modal.innerHTML = `
-    <div class="modal-content" style="max-width:500px;max-height:90dvh;">
-      <h3>📍 Point de mesure</h3>
+    <div class="modal-content plan-modal">
 
-      <div class="form-section-title" style="padding:0 0 8px;border:none;font-size:.82rem;">
-        ${isCT ? 'Zone à Caractéristiques Similaires (ZCS)' : 'Zone Homogène (ZH)'}
+      <div class="plan-modal-header">
+        <div class="plan-modal-badge">${isCT ? 'CT' : 'CSP'}</div>
+        <h3 style="flex:1;font-size:1rem;">📍 Capteur ${num}</h3>
+        <button class="btn-icon" id="modal-close-x" title="Fermer">✕</button>
       </div>
-      ${zoneFieldsHtml}
 
-      <div class="form-section-title" style="padding:12px 0 8px;border:none;font-size:.82rem;">
-        Pièce instrumentée / Dosimètre
-      </div>
-      ${pointFieldsHtml}
+      <!-- Section Zone -->
+      <details class="plan-modal-section" open>
+        <summary class="plan-modal-section-title">
+          ${isCT ? 'Zone à Caractéristiques Similaires (ZCS)' : 'Zone Homogène'}
+        </summary>
+        <div class="plan-modal-section-body">
+          <div class="form-row-2">
+            <div class="form-group">
+              <label class="form-label">Bâtiment</label>
+              <select id="modal-bat-select" class="form-input form-input-sm">${batOpts}</select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">${isCT ? 'ZCS' : 'Zone'}</label>
+              <select id="modal-zone-select" class="form-input form-input-sm">${zoneOpts}</select>
+            </div>
+          </div>
+          ${zoneFields.map(f => renderModalField(f, zone?.data?.[f.id] ?? '', 'zone-')).join('')}
+        </div>
+      </details>
 
-      <div class="modal-actions">
-        <button class="btn btn-danger" id="modal-delete">🗑</button>
-        <button class="btn btn-secondary" id="modal-cancel">Annuler</button>
-        <button class="btn btn-primary" id="modal-save">💾 Enregistrer</button>
+      <!-- Section Dosimètre -->
+      <details class="plan-modal-section" open>
+        <summary class="plan-modal-section-title">Dosimètre / Détecteur</summary>
+        <div class="plan-modal-section-body">
+          ${terrainFields.map(f => renderModalField(f, point.data?.[f.id] ?? '', 'point-')).join('')}
+        </div>
+      </details>
+
+      <div class="plan-modal-actions">
+        <button class="btn btn-danger btn-sm" id="modal-delete">🗑</button>
+        <button class="btn btn-secondary btn-sm" id="modal-cancel">Annuler</button>
+        <button class="btn btn-primary btn-sm" id="modal-save">💾 Enregistrer</button>
       </div>
+
     </div>
   `;
 
   document.body.appendChild(modal);
 
-  // Fermer
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closePointModal();
-  });
-  $('#modal-cancel', modal).addEventListener('click', closePointModal);
+  // Fermeture
+  modal.addEventListener('click', (e) => { if (e.target === modal) closePointModal(); });
+  $('#modal-close-x', modal)?.addEventListener('click', closePointModal);
+  $('#modal-cancel', modal)?.addEventListener('click', closePointModal);
 
-  // Supprimer
-  $('#modal-delete', modal).addEventListener('click', async () => {
-    if (confirm('Supprimer ce point de mesure ?')) {
+  // Suppression
+  $('#modal-delete', modal)?.addEventListener('click', async () => {
+    if (confirm('Supprimer ce capteur ?')) {
       await PointDB.delete(point.id);
       closePointModal();
       redraw();
-      State.toast('Point supprimé', 'info');
+      State.toast('Capteur supprimé', 'info');
     }
   });
 
-  // Enregistrer
-  $('#modal-save', modal).addEventListener('click', async () => {
+  // Enregistrement
+  $('#modal-save', modal)?.addEventListener('click', async () => {
     // Données zone
     const zoneData = {};
     for (const f of zoneFields) {
-      const input = $(`[name="zone-${f.id}"]`, modal);
-      if (input && input.value !== '') zoneData[f.id] = input.value;
+      const el = $(`[name="zone-${f.id}"]`, modal);
+      if (el) zoneData[f.id] = el.value;
     }
-    if (Object.keys(zoneData).length > 0 && zone) {
-      await ZoneDB.update(zone.id, { data: zoneData });
-    }
+    const selZoneId = $('#modal-zone-select', modal)?.value || zone?.id;
+    if (selZoneId) await ZoneDB.update(selZoneId, { data: zoneData });
 
-    // Données point
+    // Changer de zone si nécessaire
+    const selBatId = $('#modal-bat-select', modal)?.value;
+    const needsMove = selZoneId !== point.zoneId || selBatId !== point.batimentId;
+    const patchBase = needsMove
+      ? { zoneId: selZoneId, batimentId: selBatId || point.batimentId }
+      : {};
+
+    // Données capteur
     const pointData = {};
     for (const f of terrainFields) {
-      const input = $(`[name="point-${f.id}"]`, modal);
-      if (input && input.value !== '') pointData[f.id] = input.value;
+      const el = $(`[name="point-${f.id}"]`, modal);
+      if (el) pointData[f.id] = el.value;
     }
-    await PointDB.update(point.id, { data: pointData });
+    await PointDB.update(point.id, { ...patchBase, data: pointData });
 
     closePointModal();
     redraw();
-    State.toast('Point enregistré', 'success', 1500);
+    State.toast('Capteur enregistré ✓', 'success', 1500);
   });
 }
 
 function renderModalField(field, value, prefix) {
-  let input = '';
   const name = prefix + field.id;
+  let input;
 
-  if (field.type === 'select') {
-    const opts = (field.options || []).map(o => {
-      const sel = String(value) === String(o) ? 'selected' : '';
-      return `<option value="${o}" ${sel}>${o}</option>`;
-    }).join('');
-    input = `<select name="${name}" class="form-input form-input-sm"><option value="">—</option>${opts}</select>`;
+  if (field.type === 'select' || field.options?.length) {
+    const opts = (field.options || []).map(o =>
+      `<option value="${o}" ${String(value) === String(o) ? 'selected' : ''}>${o}</option>`
+    ).join('');
+    input = `<select name="${name}" class="form-input form-input-sm">
+               <option value="">—</option>${opts}
+             </select>`;
   } else if (field.type === 'date') {
     input = `<input type="date" name="${name}" class="form-input form-input-sm" value="${value}">`;
   } else if (field.type === 'number') {
-    input = `<input type="number" name="${name}" class="form-input form-input-sm" inputmode="numeric" step="any" value="${value}">`;
+    input = `<input type="number" name="${name}" class="form-input form-input-sm"
+               inputmode="decimal" step="any" value="${value}">`;
   } else {
-    input = `<input type="${field.type || 'text'}" name="${name}" class="form-input form-input-sm" value="${value}">`;
+    input = `<input type="text" name="${name}" class="form-input form-input-sm" value="${value}">`;
   }
 
   return `
-    <div class="form-group ${field.required ? 'required' : ''}" style="margin-bottom:8px;">
-      <label class="form-label" style="font-size:.72rem;">${field.label}</label>
+    <div class="form-group ${field.required ? 'required' : ''}">
+      <label class="form-label">${field.label}${field.required ? ' *' : ''}</label>
       ${input}
     </div>
   `;
 }
 
-function closePointModal() {
-  const modal = $('#point-modal');
-  if (modal) modal.remove();
+function closePointModal() { $('#point-modal')?.remove(); }
+
+// ── Chargement image ─────────────────────────────────────────
+
+async function loadPlanImage(file) {
+  const tid = State.toast('Chargement…', 'info', 15000);
+  try {
+    const dataUrl = file.type === 'application/pdf'
+      ? await pdfToDataUrl(file)
+      : await fileToDataUrl(file);
+
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = dataUrl; });
+
+    _planImage = img;
+    _transform.rotation = 0;
+    $('#plan-empty')?.classList.add('hidden');
+
+    const missionId = State.get('currentMissionId');
+    if (missionId) {
+      const plans = await PlanDB.getByMission(missionId);
+      const d = { imageData: dataUrl, width: img.naturalWidth, height: img.naturalHeight, name: file.name };
+      if (plans.length) await PlanDB.update(plans[0].id, d);
+      else await PlanDB.create(missionId, d);
+    }
+    fitToView();
+    redraw();
+    State.dismissToast(tid);
+    State.toast('Plan chargé ✓', 'success', 2000);
+  } catch (err) {
+    console.error(err);
+    State.dismissToast(tid);
+    State.toast('Erreur : ' + err.message, 'error', 4000);
+  }
+}
+
+async function loadPlanFromDB() {
+  const missionId = State.get('currentMissionId'); if (!missionId) return;
+  const plans = await PlanDB.getByMission(missionId);
+  if (!plans.length || !plans[0].imageData) return;
+  const img = new Image();
+  img.onload = () => {
+    _planImage = img;
+    $('#plan-empty')?.classList.add('hidden');
+    fitToView(); redraw();
+  };
+  img.src = plans[0].imageData;
+}
+
+function fileToDataUrl(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload  = e => res(e.target.result);
+    r.onerror = ()  => rej(new Error('Lecture impossible'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function pdfToDataUrl(file) {
+  if (!window.pdfjsLib) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src    = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const pdf  = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const page = await pdf.getPage(1);
+  const vp   = page.getViewport({ scale: 2.0 });
+  const cv   = document.createElement('canvas');
+  cv.width = vp.width; cv.height = vp.height;
+  await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+  return cv.toDataURL('image/png');
 }
