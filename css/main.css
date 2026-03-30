@@ -525,162 +525,97 @@ select.form-input { padding-right: 30px; }
   align-items: center;
 }
 
-.plan-file-btn-wrap {
+.plan-file-wrap {
   position: relative;
   display: inline-flex;
   flex-shrink: 0;
 }
 
-.plan-zoom {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-}
+.plan-zoom { display: flex; gap: 4px; margin-left: auto; }
 
-.plan-status-bar {
-  font-size: .78rem;
-  padding: 4px 0 6px;
-  min-height: 22px;
+/* Onglets multi-plans */
+.plan-tabs-bar { padding: 0 0 4px; }
+.plan-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.plan-tabs::-webkit-scrollbar { display: none; }
+.plan-tab {
+  padding: 5px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: .8rem; font-weight: 600;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
 }
+.plan-tab.active { background: var(--accent); color: #0f1117; border-color: var(--accent); }
+
+/* Barre de statut */
+.plan-status { font-size: .78rem; min-height: 20px; padding: 2px 0 6px; }
 .status-locked { color: var(--warning); }
 .status-nav    { color: var(--text-dim); }
 
+/* Canvas */
 .plan-canvas-wrap {
   position: relative;
   width: 100%;
-  height: calc(100dvh - 240px);
-  min-height: 280px;
+  height: calc(100dvh - 250px);
+  min-height: 260px;
   background: #111;
   border-radius: var(--radius);
-  clip-path: inset(0 round var(--radius));
-  touch-action: none;
+  overflow: hidden;
 }
 
-#plan-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-  cursor: grab;
-}
+#plan-canvas { width: 100%; height: 100%; display: block; cursor: grab; }
 
 .plan-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-dim);
-  text-align: center;
-  cursor: pointer;
-  z-index: 5;
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px; color: var(--text-dim); text-align: center;
+  cursor: pointer; z-index: 5;
 }
 .plan-empty-icon { font-size: 3rem; opacity: .5; }
 .plan-empty .text-sm { font-size: .8rem; }
 
 /* Bouton verrou actif */
-#btn-lock.active {
-  background: var(--warning);
-  color: #0f1117;
-  border-color: var(--warning);
-}
-#btn-lock:disabled,
-#btn-rotate-left:disabled,
-#btn-rotate-right:disabled {
-  opacity: .4;
-  cursor: not-allowed;
-}
+#btn-lock.active { background: var(--warning); color: #0f1117; border-color: var(--warning); }
+#btn-lock:disabled, #btn-rot-l:disabled, #btn-rot-r:disabled,
+#btn-zi:disabled, #btn-zo:disabled, #btn-zr:disabled { opacity: .4; pointer-events: none; }
 
-/* ── Modal capteur (plan) ──────────────────────────────────── */
+/* ── Modal capteur plan ──────────────────────────────────── */
 
 .plan-modal {
-  max-width: 520px;
-  max-height: 92dvh;
-  padding: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  max-width: 520px; max-height: 92dvh;
+  padding: 0; display: flex; flex-direction: column; overflow: hidden;
 }
-
 .plan-modal-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-
 .plan-modal-badge {
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: .7rem;
-  font-weight: 700;
-  background: var(--accent);
-  color: #0f1117;
+  padding: 3px 8px; border-radius: 4px;
+  font-size: .7rem; font-weight: 700;
+  background: var(--accent); color: #0f1117;
 }
-
-.plan-modal-section {
-  border-bottom: 1px solid var(--border);
-}
-
+.plan-modal-section { border-bottom: 1px solid var(--border); }
 .plan-modal-section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  font-size: .82rem;
-  font-weight: 700;
-  color: var(--accent);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 16px; font-size: .82rem; font-weight: 700;
+  color: var(--accent); cursor: pointer; list-style: none; user-select: none;
 }
 .plan-modal-section-title::marker,
 .plan-modal-section-title::-webkit-details-marker { display: none; }
-.plan-modal-section-title::before {
-  content: '▾';
-  font-size: .75rem;
-  transition: transform .15s;
-}
-details.plan-modal-section:not([open]) .plan-modal-section-title::before {
-  transform: rotate(-90deg);
-}
-
+.plan-modal-section-title::before { content:'▾'; font-size:.75rem; transition:transform .15s; }
+details.plan-modal-section:not([open]) .plan-modal-section-title::before { transform:rotate(-90deg); }
 .plan-modal-section-body {
   padding: 8px 16px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
 }
-
-/* Scrollable content zone */
-.plan-modal > details {
-  overflow-y: auto;
-}
-
 .plan-modal-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0;
 }
-
-.form-row-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.form-input-sm {
-  padding: 7px 10px;
-  font-size: .85rem;
-}
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.form-input-sm { padding: 7px 10px; font-size: .85rem; }
 
 /* ── Results ───────────────────────────────────────────────── */
 
