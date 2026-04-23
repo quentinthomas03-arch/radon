@@ -1,5 +1,6 @@
 // ============================================================
 // export.js — Génération XLSX structuré (onglets Entrée + Tableau)
+// + export Fiche de prélèvement PearL (ENR ESS RnPre Cr39 v07)
 // Utilise SheetJS (xlsx) chargé dynamiquement via CDN
 // ============================================================
 
@@ -47,7 +48,10 @@ export function renderExport() {
       </div>
       <div class="export-actions">
         <button class="btn btn-primary btn-block btn-lg" id="btn-export-xlsx">
-          📤 Exporter en XLSX
+          📤 Exporter en XLSX (macro ${config.type})
+        </button>
+        <button class="btn btn-primary btn-block" id="btn-export-fiche">
+          🧪 Fiche de prélèvement labo (PearL)
         </button>
         <button class="btn btn-secondary btn-block" id="btn-export-json">
           💾 Sauvegarder (JSON)
@@ -149,6 +153,7 @@ async function loadExportPreview() {
 
     // Bind export buttons
     $('#btn-export-xlsx')?.addEventListener('click', () => exportXLSX());
+    $('#btn-export-fiche')?.addEventListener('click', () => exportFichePrelevement());
     $('#btn-export-json')?.addEventListener('click', () => exportJSON());
     $('#btn-back-export')?.addEventListener('click', () => {
       State.clearMission();
@@ -187,7 +192,7 @@ function computeZoneAverages(config, zones, points) {
   return results;
 }
 
-// ── Export XLSX ──────────────────────────────────────────────
+// ── Export XLSX (macro) ──────────────────────────────────────
 
 async function exportXLSX() {
   State.setLoading(true);
@@ -372,7 +377,7 @@ function buildTableauSheet(config, batiments, zones, points) {
             zone.data?.ventilation || '',
             zone.data?.temperature || '',
             zone.data?.surface_sol || '',
-            d.nb_detecteur || 1,
+            1,                                 // Nombre de détecteur : toujours 1 (1 clic = 1 capteur)
             d.num_detecteur || '',
             d.lieu_pose || '',
             d.type_fenetres || '',
@@ -445,6 +450,211 @@ function buildTableauSheet(config, batiments, zones, points) {
   }
 
   return rows;
+}
+
+// ══════════════════════════════════════════════════════════════
+// EXPORT FICHE DE PRÉLÈVEMENT PearL (ENR ESS RnPre Cr39 v07)
+// Réplique exacte de la structure du template labo.
+// Colonnes (ligne 14 = entêtes, 16+ = données) :
+//   D = N° Dosimètre           (num_detecteur / num_dosimetrie)
+//   E = N° Client              (formule =IF(D="","",D) — rempli auto)
+//   F = Début d'exposition     (date_pose)
+//   G = Fin d'exposition       (date_depose)
+//   H = Lieu de pose           (lieu_pose / nom_piece + bâtiment/zone)
+//   I = Observations           (libre)
+// ══════════════════════════════════════════════════════════════
+
+async function exportFichePrelevement() {
+  State.setLoading(true);
+
+  try {
+    const xlsx = await loadXLSX();
+    const missionId = State.get('currentMissionId');
+    const config = State.getConfig();
+    const mission   = await MissionDB.getById(missionId);
+    const batiments = await BatimentDB.getByMission(missionId);
+    const zones     = await ZoneDB.getByMission(missionId);
+    const points    = await PointDB.getByMission(missionId);
+
+    const isCT   = config.type === 'CT';
+    const entree = mission.entree || {};
+    const typeDepistage = isCT ? 'LTBât' : 'ERP';   // Code attendu par la fiche PearL
+    const dossier   = entree.numero_dossier || entree.etab_nom || '';
+    const preleveur = entree.intervenant || '';
+
+    // Construit une map batId/zoneId → libellé pour étiqueter chaque ligne
+    const batMap  = Object.fromEntries(batiments.map(b => [b.id, b.data?.nom  || 'Bât ' + (b.order + 1)]));
+    const zoneMap = Object.fromEntries(zones.map(z => {
+      const lbl = isCT ? (z.data?.nom || '') : (z.data?.numero || '');
+      return [z.id, (isCT ? 'ZCS ' : 'Zone ') + lbl];
+    }));
+
+    // Préparer les données triées (par bâtiment → zone → ordre de création)
+    const orderedPoints = [];
+    for (const bat of batiments) {
+      const batZones = zones.filter(z => z.batimentId === bat.id);
+      for (const zone of batZones) {
+        const zPts = points.filter(p => p.zoneId === zone.id);
+        for (const p of zPts) orderedPoints.push({ p, bat, zone });
+      }
+    }
+
+    // ── Créer la worksheet cellule par cellule pour conserver positions exactes ──
+    const ws = {};
+    const setCell = (addr, value, type = 's') => {
+      ws[addr] = { t: type, v: value };
+      if (type === 'n' && typeof value === 'string') ws[addr].v = Number(value);
+    };
+    const setFormula = (addr, formula, result = '') => {
+      ws[addr] = { t: 's', f: formula, v: result };
+    };
+
+    // En-têtes (titres généraux du document)
+    setCell('F2', 'Fiche de prélèvement');
+    setCell('J2', 'Réf : ENR ESS RnPre Cr39');
+    setCell('J3', 'Version : 07');
+    setCell('F4', "Mesure intégrée de l'activité volumique en Radon 222");
+    setCell('J4', 'Date : 23/06/2021');
+    setCell('F6', 'En application de la norme NF ISO 11665-4');
+    setCell('J6', 'Page :');
+    setCell('K6', 1, 'n');
+    setCell('L6', '/');
+    setCell('M6', 1, 'n');
+
+    // Bloc contact / organisme
+    setCell('C9',  'Contact');
+    setCell('F9',  'Code postal du lieu de mesure1 :');
+    setCell('I9',  'Organisme de prélèvement2 :');
+    setCell('C10', 'Tel : ');
+    setCell('F10', 'Commune du lieu de mesure1 :');
+    setCell('I10', 'Prénom, Nom du préleveur2 : ' + preleveur);
+    setCell('C11', 'Mail :');
+    setCell('F11', 'Type de dépistage1 : ' + typeDepistage + '   (Notez: ERP / LTBât / Habitat)');
+    setCell('I11', 'Référence dossier2 : ' + dossier);
+    setCell('F12', "1: Données anonymes transmises à l'IRSN conformément à l'arrêté du 26 octobre 2020  ERP : Au sens du code de la santé publique - LTBât : Code du travail");
+    setCell('I12', "2: Notez les données que vous souhaitez voir apparaitre dans les rapports d'analyses");
+
+    // En-têtes de colonnes du tableau (ligne 14)
+    setCell('D14', 'N° Dosimètre');
+    setCell('E14', 'N° Client\n(Modifier uniquement si différent du N° de Dosimètre)');
+    setCell('F14', "Début d'exposition");
+    setCell('G14', "Fin\nd'exposition");
+    setCell('H14', 'Lieu de pose');
+    setCell('I14', 'Observations');
+
+    // Lignes de données : démarre en ligne 16
+    let row = 16;
+    for (const { p, bat, zone } of orderedPoints) {
+      const d = p.data || {};
+      const numDos = d.num_detecteur || d.num_dosimetrie || '';
+      const datePose   = formatDateFr(d.date_pose);
+      const dateDepose = formatDateFr(d.date_depose);
+      const lieuBase = isCT ? (d.lieu_pose || '') : (d.nom_piece || '');
+      const lieu = lieuBase
+        ? `${lieuBase} (${batMap[bat.id]} / ${zoneMap[zone.id]})`
+        : `${batMap[bat.id]} / ${zoneMap[zone.id]}`;
+      const observations = '';
+
+      // D = N° Dosimètre (numérique si possible, sinon texte)
+      if (numDos && /^\d+$/.test(String(numDos))) {
+        setCell('D' + row, numDos, 'n');
+      } else {
+        setCell('D' + row, String(numDos));
+      }
+      // E = N° Client (formule conforme au template : =IF(D="","",D))
+      setFormula('E' + row, `IF(D${row}="","",D${row})`, numDos || '');
+      // F = Début d'exposition
+      setCell('F' + row, datePose);
+      // G = Fin d'exposition
+      setCell('G' + row, dateDepose);
+      // H = Lieu de pose
+      setCell('H' + row, lieu);
+      // I = Observations
+      setCell('I' + row, observations);
+
+      row++;
+    }
+
+    // Pied de page labo
+    const footRow = Math.max(row + 2, 38);
+    setCell('B' + footRow,       'PearL');
+    setCell('B' + (footRow + 1), 'Pôle d\u2019expertises et d\u2019analyses radioactives Limousin');
+    setCell('B' + (footRow + 2), '20, Rue Atlantis - 87068 Limoges Cedex');
+    setCell('B' + (footRow + 3), 'Tél : 05-55-43-69-95  - contact@sante-radon.com');
+    setCell('B' + (footRow + 4), 'SAS au capital de 605 165 \u20ac - n° siret : 488 577 958 000 25');
+
+    // Définir la plage de la worksheet (!ref)
+    ws['!ref'] = `A1:N${footRow + 5}`;
+
+    // Largeurs de colonnes (pour lisibilité)
+    ws['!cols'] = [
+      { wch: 3 },   // A
+      { wch: 5 },   // B
+      { wch: 10 },  // C
+      { wch: 18 },  // D — N° Dosimètre
+      { wch: 18 },  // E — N° Client
+      { wch: 14 },  // F — Début
+      { wch: 14 },  // G — Fin
+      { wch: 30 },  // H — Lieu
+      { wch: 30 },  // I — Observations
+      { wch: 12 },  // J
+      { wch: 5 },   // K
+      { wch: 3 },   // L
+      { wch: 5 },   // M
+      { wch: 5 },   // N
+    ];
+
+    // Hauteur des lignes de données (plus grandes pour la saisie)
+    ws['!rows'] = [];
+    for (let i = 0; i < row - 1; i++) ws['!rows'][i] = { hpt: 16 };
+    for (let i = 15; i < row - 1; i++) ws['!rows'][i] = { hpt: 24 };
+
+    // Fusions (approximation du template)
+    ws['!merges'] = [
+      // En-tête : "Fiche de prélèvement" F2:H2, "Réf..." J2:M2
+      { s: { r: 1, c: 5 }, e: { r: 1, c: 7 } },
+      { s: { r: 1, c: 9 }, e: { r: 1, c: 12 } },
+      // Ligne 4 titre + date
+      { s: { r: 3, c: 5 }, e: { r: 3, c: 7 } },
+      { s: { r: 3, c: 9 }, e: { r: 3, c: 12 } },
+      // Ligne 6 norme
+      { s: { r: 5, c: 5 }, e: { r: 5, c: 7 } },
+      // Bloc contact (colonnes fusionnées pour aération)
+      { s: { r: 8, c: 5 }, e: { r: 8, c: 7 } },
+      { s: { r: 9, c: 5 }, e: { r: 9, c: 7 } },
+      { s: { r: 10, c: 5 }, e: { r: 10, c: 7 } },
+      { s: { r: 8, c: 8 }, e: { r: 8, c: 12 } },
+      { s: { r: 9, c: 8 }, e: { r: 9, c: 12 } },
+      { s: { r: 10, c: 8 }, e: { r: 10, c: 12 } },
+      // Notes bas de bloc contact
+      { s: { r: 11, c: 5 }, e: { r: 11, c: 7 } },
+      { s: { r: 11, c: 8 }, e: { r: 11, c: 12 } },
+    ];
+
+    // Créer le classeur et télécharger
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, 'FR et RA');
+
+    const date = new Date().toISOString().slice(0, 10);
+    const safeDossier = (dossier || 'fiche').replace(/[^a-zA-Z0-9_-]+/g, '_');
+    const filename = `FichePrelevement_${safeDossier}_${date}.xlsx`;
+
+    xlsx.writeFile(wb, filename);
+    State.toast(`Fiche labo ${filename} téléchargée (${orderedPoints.length} capteur(s))`, 'success');
+  } catch (err) {
+    State.toast('Erreur fiche labo : ' + err.message, 'error');
+    console.error(err);
+  }
+
+  State.setLoading(false);
+}
+
+// Petite aide : formatage date ISO (yyyy-mm-dd) en format français jj/mm/aaaa
+function formatDateFr(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
 // ── Export JSON (sauvegarde complète) ────────────────────────

@@ -1,6 +1,8 @@
 // plan.js — Vue Plan interactif
 // Panneau de gestion Bâtiment/ZCS au-dessus du canvas
 // Modale capteur simplifiée (données capteur uniquement)
+// Bouton verrouillage (🔒) : désactive le pan 1-doigt/souris tout en conservant
+//   le zoom (molette, pinch, boutons) et le tap pour placer/éditer les capteurs.
 import * as State from './state.js';
 import { MissionDB, PlanDB, PointDB, ZoneDB, BatimentDB } from './database.js';
 
@@ -12,6 +14,7 @@ let _img = null, _cx = 0, _cy = 0, _scale = 1, _rot = 0;
 let _planIdx = 0;
 let _pts = [], _ptsMid = null;
 let _selBatId = null, _selZoneId = null;
+let _locked = false;                // ← NEW : verrouillage du plan (pan désactivé)
 
 // Touch state
 let _t1 = null, _p0 = null, _tap = null, _md = null;
@@ -27,6 +30,7 @@ export function renderPlan() {
       </div>
       <button id="btn-rot-l" class="btn btn-sm btn-secondary" title="Rotation −90°">↺ −90°</button>
       <button id="btn-rot-r" class="btn btn-sm btn-secondary" title="Rotation +90°">↻ +90°</button>
+      <button id="btn-lock" class="btn btn-sm btn-secondary" title="Verrouiller le plan">🔓</button>
       <div class="plan-zoom">
         <button id="btn-zi" class="btn-icon" title="Zoom +">＋</button>
         <button id="btn-zf" class="btn-icon" title="Recadrer">⟲</button>
@@ -51,13 +55,14 @@ export function renderPlan() {
 export function initPlan() {
   _img=null;_cx=0;_cy=0;_scale=1;_rot=0;_planIdx=0;
   _pts=[];_ptsMid=null;_t1=null;_p0=null;_tap=null;_md=null;
-  _selBatId=null;_selZoneId=null;
+  _selBatId=null;_selZoneId=null;_locked=false;
 
-  b('btn-rot-l', 'click', () => { _rot -= Math.PI/2; draw(); });
-  b('btn-rot-r', 'click', () => { _rot += Math.PI/2; draw(); });
+  b('btn-rot-l', 'click', () => { if(_locked) return; _rot -= Math.PI/2; draw(); });
+  b('btn-rot-r', 'click', () => { if(_locked) return; _rot += Math.PI/2; draw(); });
   b('btn-zi', 'click', () => doZoom(1.5));
   b('btn-zo', 'click', () => doZoom(1/1.5));
-  b('btn-zf', 'click', () => { fitToView(); draw(); });
+  b('btn-zf', 'click', () => { if(_locked) return; fitToView(); draw(); });
+  b('btn-lock', 'click', toggleLock);
   b('btn-back-plan', 'click', () => { State.clearMission(); State.navigate('home'); });
   $$('.mission-nav-tab').forEach(t => t.addEventListener('click', () => State.navigate(t.dataset.navView)));
 
@@ -94,6 +99,20 @@ export function initPlan() {
 function b(id, ev, fn) {
   const el = $(`#${id}`);
   if (el) el.addEventListener(ev, fn);
+}
+
+// ── Verrouillage ──────────────────────────────────────────────
+function toggleLock() {
+  _locked = !_locked;
+  const btn = $('#btn-lock');
+  if (btn) {
+    btn.textContent = _locked ? '🔒' : '🔓';
+    btn.title = _locked ? 'Déverrouiller le plan' : 'Verrouiller le plan';
+    btn.classList.toggle('btn-lock-on', _locked);
+  }
+  const cv = $('#plan-canvas');
+  if (cv) cv.style.cursor = _locked ? 'pointer' : 'crosshair';
+  State.toast(_locked ? '🔒 Plan verrouillé (zoom et tap toujours actifs)' : '🔓 Plan déverrouillé', 'info', 1800);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -367,6 +386,8 @@ async function openModal(point) {
   });
 }
 
+// Rend un champ de formulaire : supporte le flag `numeric:true` pour
+// afficher le clavier numérique tout en conservant un input text (saisie libre)
 function fld(f, val, pfx) {
   const nm = pfx + f.id; let inp;
   if (f.options?.length || f.type === 'select') {
@@ -377,6 +398,9 @@ function fld(f, val, pfx) {
     inp = `<input type="date" name="${nm}" class="form-input form-input-sm" value="${val}">`;
   } else if (f.type === 'number') {
     inp = `<input type="number" name="${nm}" class="form-input form-input-sm" inputmode="decimal" step="any" value="${val}">`;
+  } else if (f.numeric) {
+    // type text + inputmode="numeric" → clavier numérique mobile, mais saisie libre (lettres autorisées)
+    inp = `<input type="text" name="${nm}" class="form-input form-input-sm" inputmode="numeric" pattern="[0-9]*" value="${val}">`;
   } else {
     inp = `<input type="text" name="${nm}" class="form-input form-input-sm" value="${val}">`;
   }
@@ -478,26 +502,33 @@ function updateStatus() {
   const total = _pts.filter(p => p.planPosition && (p.planPosition.planIdx ?? 0) === _planIdx).length;
   const inZone = _selZoneId ? _pts.filter(p => p.planPosition && (p.planPosition.planIdx ?? 0) === _planIdx && p.zoneId === _selZoneId).length : 0;
   const zonePart = _selZoneId ? ` · ${inZone} dans la zone sélectionnée` : '';
-  bar.innerHTML = `<span class="status-nav">${total > 0 ? total + ' capteur(s) placé(s)' + zonePart : 'Tapez sur le plan pour placer un capteur'}</span>`;
+  const lockPart = _locked ? ' · 🔒 verrouillé' : '';
+  bar.innerHTML = `<span class="status-nav">${total > 0 ? total + ' capteur(s) placé(s)' + zonePart + lockPart : 'Tapez sur le plan pour placer un capteur' + lockPart}</span>`;
 }
 
 // ── Souris ────────────────────────────────────────────────────
+// Le tap (clic simple) fonctionne TOUJOURS, même verrouillé.
+// Seul le pan (drag) est désactivé.
 function onMD(e) {
   _md = { cx: _cx, cy: _cy, x: e.offsetX, y: e.offsetY, moved: false };
-  e.currentTarget.style.cursor = 'grabbing';
+  e.currentTarget.style.cursor = _locked ? 'pointer' : 'grabbing';
 }
 function onMM(e) {
   if (!_md) return;
   const dx = e.offsetX - _md.x, dy = e.offsetY - _md.y;
   if (Math.hypot(dx, dy) > 4) _md.moved = true;
+  if (_locked) return;            // ← pas de pan si verrouillé
   _cx = _md.cx + dx; _cy = _md.cy + dy; draw();
 }
 async function onMU(e) {
   if (_md && !_md.moved) await tap(e.offsetX, e.offsetY);
-  _md = null; e.currentTarget.style.cursor = 'crosshair';
+  _md = null; e.currentTarget.style.cursor = _locked ? 'pointer' : 'crosshair';
 }
 
 // ── Touch ─────────────────────────────────────────────────────
+// Pinch-zoom (2 doigts) reste TOUJOURS actif, verrouillé ou non.
+// Pan 1 doigt → désactivé si _locked.
+// Tap → toujours actif.
 function tp(t, c) { const r = c.getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
 
 function onTS(e) {
@@ -514,6 +545,7 @@ function onTS(e) {
 function onTM(e) {
   e.preventDefault(); const c = e.currentTarget;
   if (e.touches.length === 2 && _p0) {
+    // Pinch-zoom : toujours actif (même verrouillé)
     const a = tp(e.touches[0], c), bb = tp(e.touches[1], c);
     const dist = Math.hypot(bb.x - a.x, bb.y - a.y), mx = (a.x + bb.x) / 2, my = (a.y + bb.y) / 2;
     const ns = Math.max(0.05, Math.min(20, _p0.s * (dist / _p0.dist))), sr = ns / _p0.s;
@@ -523,6 +555,7 @@ function onTM(e) {
     const p = tp(e.touches[0], c);
     const dx = p.x - _t1.x0, dy = p.y - _t1.y0;
     if (_tap && Math.hypot(dx, dy) > 8) _tap = null;
+    if (_locked) return;          // ← pas de pan 1-doigt si verrouillé
     _cx = _t1.cx0 + dx; _cy = _t1.cy0 + dy; draw();
   }
 }

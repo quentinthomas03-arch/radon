@@ -36,9 +36,11 @@ export const CONFIG_CT = {
         options:['< Température Ambiante','Température Ambiante','> Température Ambiante']},
       {id:'surface_sol',  label:'Surface au sol (m²)',   type:'number', required:false, excelCol:'L'},
     ]},
+    // NOTE : le champ nb_detecteur a été retiré de la saisie terrain.
+    // Comme chaque clic sur le plan = 1 capteur, la valeur est toujours 1
+    // et l'export (export.js) l'écrit directement en dur dans la colonne M.
     point:{label:'Point de mesure',fields:[
-      {id:'nb_detecteur',  label:'Nombre de détecteur',                   type:'number', required:false, excelCol:'M', phase:'terrain'},
-      {id:'num_detecteur', label:'N° Détecteur',                          type:'text',   required:true,  excelCol:'N', phase:'terrain'},
+      {id:'num_detecteur', label:'N° Détecteur',                          type:'text',   required:true,  excelCol:'N', phase:'terrain', numeric:true},
       {id:'lieu_pose',     label:'Lieu de pose',                          type:'text',   required:true,  excelCol:'O', phase:'terrain'},
       {id:'type_fenetres', label:'Type de fenêtres',                      type:'select', required:false, excelCol:'P', phase:'terrain',
         options:["Simple vitrage","Double vitrage structure bois","Double vitrage structure PVC","Double vitrage structure aluminium","Triple vitrage","Absence d'ouvrants","Autre"]},

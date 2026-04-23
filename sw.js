@@ -2,7 +2,7 @@
 // sw.js — Service Worker : cache offline
 // ============================================================
 
-const CACHE_NAME = 'radon-pwa-v8';
+const CACHE_NAME = 'radon-pwa-v9';
 
 const ASSETS = [
   './',
@@ -92,4 +92,3 @@ self.addEventListener('fetch', (event) => {
       })
   );
 });
-

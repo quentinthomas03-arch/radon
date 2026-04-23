@@ -34,7 +34,7 @@ export const CONFIG_CSP = {
       {id:'surface_sol', label:'Surface au sol (m²)',    type:'number', required:false, excelCol:'K'},
     ]},
     point:{label:'Point de mesure',fields:[
-      {id:'num_dosimetrie',label:'N° Dosimétrie',                        type:'text',   required:true,  excelCol:'L', phase:'terrain'},
+      {id:'num_dosimetrie',label:'N° Dosimétrie',                        type:'text',   required:true,  excelCol:'L', phase:'terrain', numeric:true},
       {id:'nom_piece',     label:'Nom de la pièce instrumentée',         type:'text',   required:true,  excelCol:'M', phase:'terrain'},
       {id:'surface_piece', label:'Surface de la pièce (m²)',             type:'number', required:false, excelCol:'N', phase:'terrain'},
       {id:'date_pose',     label:'Date de pose',                         type:'date',   required:true,  excelCol:'O', phase:'terrain'},
