@@ -379,11 +379,6 @@ async function handlePDFImport(file, points, config) {
 function parsePDFTable(text) {
   const results = [];
 
-  // Regex pour trouver les lignes du tableau
-  // Format : N°Client Lieu Activité +/- Incertitude
-  // Ex: 192015 Réfectoire 49 +/- 10
-  // ou: 191968 Open-space 49 +/- 10
-
   const lines = text.split('\n');
 
   for (let i = 0; i < lines.length; i++) {
@@ -420,7 +415,7 @@ function parsePDFTable(text) {
 }
 
 /**
- * Charger pdf.js depuis CDN
+ * Charger pdf.js depuis CDN (unpkg - pas bloqué par tracking prevention)
  */
 async function loadPDFJS() {
   if (typeof window.pdfjsLib !== 'undefined') {
@@ -428,20 +423,46 @@ async function loadPDFJS() {
   }
 
   return new Promise((resolve, reject) => {
-    // Charger la lib
     const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    // Utiliser unpkg au lieu de cdnjs (pas bloqué par tracking prevention)
+    script.src = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js';
+
     script.onload = () => {
-      // Charger le worker
       if (window.pdfjsLib) {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        try {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+        } catch (err) {
+          console.warn('Worker config warning (non-bloquant):', err);
+        }
         resolve(window.pdfjsLib);
       } else {
-        reject(new Error('PDF.js failed to load'));
+        reject(new Error('PDF.js not loaded'));
       }
     };
-    script.onerror = () => reject(new Error('Failed to load PDF.js'));
+
+    script.onerror = () => {
+      // Fallback : essayer jsdelivr
+      const scriptFallback = document.createElement('script');
+      scriptFallback.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+      
+      scriptFallback.onload = () => {
+        if (window.pdfjsLib) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+          resolve(window.pdfjsLib);
+        } else {
+          reject(new Error('PDF.js library failed to load'));
+        }
+      };
+
+      scriptFallback.onerror = () => {
+        reject(new Error('⚠️ Impossible de charger la librairie PDF. Vérifiez votre connexion internet.'));
+      };
+
+      document.head.appendChild(scriptFallback);
+    };
+
     document.head.appendChild(script);
   });
 }
