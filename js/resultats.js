@@ -339,8 +339,6 @@ async function handlePDFImport(file, points, config) {
     fullText += textContent.items.map(item => item.str).join(' ');
   }
 
-  console.log('PDF text extracted, length:', fullText.length);
-
   // Parser le tableau
   const results = parsePDFTable(fullText);
 
@@ -376,28 +374,28 @@ async function handlePDFImport(file, points, config) {
 
 /**
  * Parser le tableau du PDF - FORMAT PEARL
- * Cherche: NUM_CLIENT ... ACTIVITE +/- INCERTITUDE
+ * Cherche CHAQUE LIGNE : NUM_CLIENT ... ACTIVITE +/- INCERTITUDE
  */
 function parsePDFTable(text) {
   const results = [];
 
-  // Regex AMÉLIORÉE : cherche 6 chiffres suivi par ... et finit par NOMBRE +/- NOMBRE
-  // Exemple : 192015 ... 49 +/- 10
-  const pattern = /(\d{6})\s+.*?(\d{2})\s+\+\/\-\s+(\d{2})/g;
+  // Remplacer les multiples espaces par un seul
+  const cleanText = text.replace(/\s+/g, ' ');
+  
+  // Regex : cherche 6 chiffres, puis du texte/nombres, puis 2 chiffres +/- 2 chiffres
+  // IMPORTANT : [^\d]* ou [^0-9]* pour arrêter avant les prochains chiffres
+  const pattern = /(\d{6})\s+([^0-9]+?)(\d{2})\s+\+\/\-\s+(\d{2})(?=\s+\d{6}|$)/g;
 
   let match;
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = pattern.exec(cleanText)) !== null) {
     const numClient = match[1];
-    const activite = parseFloat(match[2]);
-    const incertitude = parseFloat(match[3]);
+    const activite = parseFloat(match[3]);
+    const incertitude = parseFloat(match[4]);
 
-    // Vérifier que ce n'est pas un doublon
-    if (!results.find(r => r.numClient === numClient)) {
-      results.push({ numClient, activite, incertitude, lieu: '—' });
-    }
+    results.push({ numClient, activite, incertitude, lieu: '—' });
   }
 
-  console.log('Résultats trouvés:', results);
+  console.log('PDF parsing - résultats trouvés:', results.length, results);
   return results;
 }
 
