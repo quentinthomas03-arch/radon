@@ -914,3 +914,313 @@ details.plan-modal-section:not([open]) .plan-modal-section-title::before { trans
 @media (min-width: 900px) {
   #app { max-width: 960px; }
 }
+/* ============================================================
+   STYLES IMPORT JSON - À ajouter à main.css
+   Drag & Drop + Modal d'aperçu
+   ============================================================ */
+
+/* ── Zone de drag & drop ────────────────────────────────────── */
+
+.import-drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px 20px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  background: rgba(0, 212, 170, 0.03);
+  cursor: pointer;
+  transition: all .25s;
+  position: relative;
+}
+
+.import-drop-zone:hover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 170, 0.08);
+}
+
+.import-drop-zone.dragover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 170, 0.15);
+  transform: scale(1.01);
+}
+
+.import-drop-icon {
+  font-size: 2.4rem;
+  opacity: 0.8;
+}
+
+.import-drop-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+}
+
+.import-drop-hint {
+  font-size: .85rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.import-drop-or {
+  font-size: .8rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin: 4px 0;
+}
+
+/* ── Modal d'aperçu avant import ────────────────────────────── */
+
+.import-preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+  opacity: 0;
+  transition: opacity .3s;
+}
+
+.import-preview-modal.show {
+  opacity: 1;
+}
+
+.import-preview-modal.fade-out {
+  opacity: 0;
+}
+
+.import-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.import-preview-dialog {
+  position: relative;
+  z-index: 1001;
+  width: 100%;
+  max-width: 500px;
+  max-height: 85vh;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideUp .3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.import-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.import-preview-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.btn-close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: color .2s;
+  padding: 0;
+}
+
+.btn-close:active {
+  color: var(--text);
+}
+
+.import-preview-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Sections du contenu */
+.preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preview-section-title {
+  font-size: .9rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* Grille d'info */
+.preview-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.preview-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.preview-info-label {
+  font-size: .75rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+.preview-info-value {
+  font-size: .95rem;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.preview-info-value.badge-ct {
+  color: var(--ct-color);
+}
+
+.preview-info-value.badge-csp {
+  color: var(--csp-color);
+}
+
+/* Statistiques */
+.preview-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.stat-icon {
+  font-size: 1.6rem;
+}
+
+.stat-label {
+  font-size: .75rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+.stat-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* Avertissement et info */
+.preview-warning {
+  padding: 10px 12px;
+  background: rgba(243, 156, 18, 0.1);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  font-size: .9rem;
+  color: #ffc870;
+}
+
+.preview-info {
+  padding: 10px 12px;
+  background: rgba(0, 212, 170, 0.1);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: .9rem;
+  color: var(--accent);
+}
+
+/* Footer avec boutons */
+.import-preview-footer {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-card-2);
+}
+
+.import-preview-footer .btn {
+  flex: 1;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .import-preview-dialog {
+    max-height: 90vh;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .preview-info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Mode sombre smoothing */
+@media (prefers-color-scheme: dark) {
+  .import-drop-zone {
+    background: rgba(0, 212, 170, 0.05);
+  }
+
+  .import-drop-zone:hover {
+    background: rgba(0, 212, 170, 0.1);
+  }
+
+  .import-drop-zone.dragover {
+    background: rgba(0, 212, 170, 0.15);
+  }
+}
