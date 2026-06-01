@@ -1,5 +1,6 @@
 // ============================================================
 // resultats.js — Saisie des résultats labo
+// ✨ AVEC IMPORT PDF AUTOMATIQUE
 // Tableau récapitulatif + saisie par point + indicateurs couleur
 // ============================================================
 
@@ -58,13 +59,27 @@ async function loadResultats() {
     }
 
     container.innerHTML =
+      renderImportButton() +
       renderSummary(config, batiments, zones, points) +
       renderResultsTable(config, batiments, zones, points);
 
-    bindResultatsEvents(config);
+    bindResultatsEvents(config, points);
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>Erreur : ${err.message}</p></div>`;
   }
+}
+
+// ── Bouton import PDF ──────────────────────────────────────
+
+function renderImportButton() {
+  return `
+    <div style="margin-bottom: 16px;">
+      <button class="btn btn-secondary btn-block" id="btn-import-pdf">
+        📥 Importer résultats PDF (PearL)
+      </button>
+      <input type="file" id="pdf-file-input" accept=".pdf" style="display:none;">
+    </div>
+  `;
 }
 
 // ── Résumé en haut ──────────────────────────────────────────
@@ -215,7 +230,28 @@ function renderResultsTable(config, batiments, zones, points) {
 
 // ── Events ──────────────────────────────────────────────────
 
-function bindResultatsEvents(config) {
+function bindResultatsEvents(config, points) {
+  // ── Import PDF ─────────────────────────────────────────────
+  const btnImportPdf = $('#btn-import-pdf');
+  const pdfInput = $('#pdf-file-input');
+
+  btnImportPdf?.addEventListener('click', () => pdfInput?.click());
+
+  pdfInput?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    State.setLoading(true);
+    try {
+      await handlePDFImport(file, points, config);
+    } catch (err) {
+      State.toast('❌ Erreur import PDF : ' + err.message, 'error');
+      console.error('PDF import error:', err);
+    } finally {
+      State.setLoading(false);
+      pdfInput.value = '';
+    }
+  });
+
   // Auto-save on change
   $$('.res-input').forEach(input => {
     input.addEventListener('change', async () => {
@@ -281,6 +317,132 @@ function bindResultatsEvents(config) {
   // Nav tabs
   $$('.mission-nav-tab').forEach(tab => {
     tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
+  });
+}
+
+/**
+ * Traiter l'import PDF et remplir automatiquement les résultats
+ */
+async function handlePDFImport(file, points, config) {
+  // Charger pdfjs dynamiquement
+  const pdfjsLib = await loadPDFJS();
+
+  // Lire le fichier
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  // Extraire texte de toutes les pages
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    fullText += textContent.items.map(item => item.str).join(' ');
+  }
+
+  // Parser le tableau : chercher les lignes avec num_client + lieu + valeurs
+  const results = parsePDFTable(fullText);
+
+  if (results.length === 0) {
+    State.toast('⚠️ Aucun résultat trouvé dans le PDF', 'warning');
+    return;
+  }
+
+  // Matcher et remplir
+  let matched = 0;
+  for (const result of results) {
+    const point = points.find(p => {
+      const numDosi = String(p.data?.num_detecteur || p.data?.num_dosimetrie || '').trim();
+      return numDosi === String(result.numClient).trim();
+    });
+
+    if (point) {
+      // Remplir les résultats
+      const valKey = config.type === 'CT' ? 'activite_bqm3' : 'concentration';
+      point.resultats = point.resultats || {};
+      point.resultats[valKey] = result.activite.toString();
+      point.resultats.incertitude = result.incertitude.toString();
+
+      // Sauvegarder
+      await PointDB.update(point.id, { resultats: point.resultats });
+      matched++;
+    }
+  }
+
+  State.toast(`✅ ${matched} résultats importés sur ${results.length}`, 'success');
+  loadResultats(); // Recharger le tableau
+}
+
+/**
+ * Parser le tableau du PDF
+ * Cherche les lignes : N°Client | Lieu | Activité | Incertitude
+ */
+function parsePDFTable(text) {
+  const results = [];
+
+  // Regex pour trouver les lignes du tableau
+  // Format : N°Client Lieu Activité +/- Incertitude
+  // Ex: 192015 Réfectoire 49 +/- 10
+  // ou: 191968 Open-space 49 +/- 10
+
+  const lines = text.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Chercher patterns comme "192015" ou "191970"
+    const match = line.match(/^(\d{6})\s+(.+?)\s+(\d+)\s+\+\/\-\s+(\d+)/);
+
+    if (match) {
+      const numClient = match[1];
+      const lieu = match[2].trim();
+      const activite = parseFloat(match[3]);
+      const incertitude = parseFloat(match[4]);
+
+      results.push({ numClient, lieu, activite, incertitude });
+    }
+  }
+
+  // Fallback : chercher aussi au format tabulaire simple
+  if (results.length === 0) {
+    const numberPattern = /(\d{6})\s+(\d+)\s+\+\/\-\s+(\d+)/g;
+    let m;
+    while ((m = numberPattern.exec(text)) !== null) {
+      results.push({
+        numClient: m[1],
+        activite: parseFloat(m[2]),
+        incertitude: parseFloat(m[3]),
+        lieu: '—'
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Charger pdf.js depuis CDN
+ */
+async function loadPDFJS() {
+  if (typeof window.pdfjsLib !== 'undefined') {
+    return window.pdfjsLib;
+  }
+
+  return new Promise((resolve, reject) => {
+    // Charger la lib
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      // Charger le worker
+      if (window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve(window.pdfjsLib);
+      } else {
+        reject(new Error('PDF.js failed to load'));
+      }
+    };
+    script.onerror = () => reject(new Error('Failed to load PDF.js'));
+    document.head.appendChild(script);
   });
 }
 
