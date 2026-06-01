@@ -339,7 +339,9 @@ async function handlePDFImport(file, points, config) {
     fullText += textContent.items.map(item => item.str).join(' ');
   }
 
-  // Parser le tableau : chercher les lignes avec num_client + lieu + valeurs
+  console.log('PDF text extracted, length:', fullText.length);
+
+  // Parser le tableau
   const results = parsePDFTable(fullText);
 
   if (results.length === 0) {
@@ -373,49 +375,34 @@ async function handlePDFImport(file, points, config) {
 }
 
 /**
- * Parser le tableau du PDF
- * Cherche les lignes : N°Client | Lieu | Activité | Incertitude
+ * Parser le tableau du PDF - FORMAT PEARL
+ * Cherche: NUM_CLIENT ... ACTIVITE +/- INCERTITUDE
  */
 function parsePDFTable(text) {
   const results = [];
 
-  const lines = text.split('\n');
+  // Regex AMÉLIORÉE : cherche 6 chiffres suivi par ... et finit par NOMBRE +/- NOMBRE
+  // Exemple : 192015 ... 49 +/- 10
+  const pattern = /(\d{6})\s+.*?(\d{2})\s+\+\/\-\s+(\d{2})/g;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const numClient = match[1];
+    const activite = parseFloat(match[2]);
+    const incertitude = parseFloat(match[3]);
 
-    // Chercher patterns comme "192015" ou "191970"
-    const match = line.match(/^(\d{6})\s+(.+?)\s+(\d+)\s+\+\/\-\s+(\d+)/);
-
-    if (match) {
-      const numClient = match[1];
-      const lieu = match[2].trim();
-      const activite = parseFloat(match[3]);
-      const incertitude = parseFloat(match[4]);
-
-      results.push({ numClient, lieu, activite, incertitude });
+    // Vérifier que ce n'est pas un doublon
+    if (!results.find(r => r.numClient === numClient)) {
+      results.push({ numClient, activite, incertitude, lieu: '—' });
     }
   }
 
-  // Fallback : chercher aussi au format tabulaire simple
-  if (results.length === 0) {
-    const numberPattern = /(\d{6})\s+(\d+)\s+\+\/\-\s+(\d+)/g;
-    let m;
-    while ((m = numberPattern.exec(text)) !== null) {
-      results.push({
-        numClient: m[1],
-        activite: parseFloat(m[2]),
-        incertitude: parseFloat(m[3]),
-        lieu: '—'
-      });
-    }
-  }
-
+  console.log('Résultats trouvés:', results);
   return results;
 }
 
 /**
- * Charger pdf.js depuis CDN (unpkg - pas bloqué par tracking prevention)
+ * Charger pdf.js depuis CDN (unpkg)
  */
 async function loadPDFJS() {
   if (typeof window.pdfjsLib !== 'undefined') {
@@ -424,7 +411,6 @@ async function loadPDFJS() {
 
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    // Utiliser unpkg au lieu de cdnjs (pas bloqué par tracking prevention)
     script.src = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js';
 
     script.onload = () => {
@@ -457,7 +443,7 @@ async function loadPDFJS() {
       };
 
       scriptFallback.onerror = () => {
-        reject(new Error('⚠️ Impossible de charger la librairie PDF. Vérifiez votre connexion internet.'));
+        reject(new Error('⚠️ Impossible de charger PDF.js. Vérifiez votre connexion internet.'));
       };
 
       document.head.appendChild(scriptFallback);
