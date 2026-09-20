@@ -15,6 +15,7 @@ let _planIdx = 0;
 let _pts = [], _ptsMid = null;
 let _selBatId = null, _selZoneId = null;
 let _locked = false;                // ← NEW : verrouillage du plan (pan désactivé)
+let _resizeObs = null;              // ResizeObserver courant (à déconnecter avant d'en recréer un)
 
 // Touch state
 let _t1 = null, _p0 = null, _tap = null, _md = null;
@@ -64,7 +65,10 @@ export function initPlan() {
   b('btn-zf', 'click', () => { if(_locked) return; fitToView(); draw(); });
   b('btn-lock', 'click', toggleLock);
   b('btn-back-plan', 'click', () => { State.clearMission(); State.navigate('home'); });
-  $$('.mission-nav-tab').forEach(t => t.addEventListener('click', () => State.navigate(t.dataset.navView)));
+  // Pas de binding local sur .mission-nav-tab ici : bindGlobalNav() (app.js) gère déjà
+  // la navigation par délégation globale pour toutes les vues (et déclenche la sauvegarde
+  // auto du formulaire courant) — un second listener ici causait un double rendu de vue
+  // à chaque clic sur un onglet.
 
   b('plan-file-input', 'change', async e => {
     const f = e.target.files?.[0]; if (!f) return;
@@ -85,7 +89,9 @@ export function initPlan() {
     cv.addEventListener('touchmove',   onTM, { passive: false });
     cv.addEventListener('touchend',    onTE, { passive: false });
     cv.addEventListener('touchcancel', onTE, { passive: false });
-    new ResizeObserver(() => { resizeCanvas(); draw(); }).observe(cv.parentElement);
+    if (_resizeObs) _resizeObs.disconnect();
+    _resizeObs = new ResizeObserver(() => { resizeCanvas(); draw(); });
+    _resizeObs.observe(cv.parentElement);
   }
 
   requestAnimationFrame(async () => {
@@ -375,8 +381,16 @@ async function openModal(point) {
   });
 
   $('#m-ok', el).addEventListener('click', async () => {
-    const zid = $('#m-zone', el)?.value || zone?.id;
     const bid = $('#m-bat', el)?.value || bat?.id;
+    // Ne retomber sur l'ancienne zone que si le bâtiment n'a pas changé —
+    // sinon un bâtiment sans zone laisserait le capteur rattaché à la zone
+    // d'un AUTRE bâtiment (incohérence de hiérarchie).
+    const zoneSelVal = $('#m-zone', el)?.value || '';
+    const zid = zoneSelVal || (bid === (bat?.id) ? zone?.id : null);
+    if (!zid) {
+      alert('Ce bâtiment n’a pas encore de zone. Créez d’abord une zone pour ce bâtiment (panneau de gestion) avant d’y rattacher un capteur.');
+      return;
+    }
     const pd = {};
     tF.forEach(f => { const i = $(`[name="p-${f.id}"]`, el); if (i) pd[f.id] = i.value; });
     const mv = zid !== point.zoneId || bid !== point.batimentId;
@@ -521,8 +535,12 @@ function onMM(e) {
   _cx = _md.cx + dx; _cy = _md.cy + dy; draw();
 }
 async function onMU(e) {
+  // e.currentTarget devient null après un await (le navigateur le réinitialise une
+  // fois le cycle de dispatch de l'événement terminé) — on le capture avant.
+  const target = e.currentTarget;
   if (_md && !_md.moved) await tap(e.offsetX, e.offsetY);
-  _md = null; e.currentTarget.style.cursor = _locked ? 'pointer' : 'crosshair';
+  _md = null;
+  if (target) target.style.cursor = _locked ? 'pointer' : 'crosshair';
 }
 
 // ── Touch ─────────────────────────────────────────────────────
@@ -686,12 +704,16 @@ function imgUrl(file) {
 }
 async function pdfUrl(file) {
   if (!window.pdfjsLib) {
-    await new Promise((res, rej) => {
+    // unpkg en priorité, repli jsdelivr — jamais cdnjs (bloqué par l'anti-tracking sur le terrain)
+    const load = (src) => new Promise((res, rej) => {
       const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-      s.onload = res; s.onerror = rej; document.head.appendChild(s);
+      s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s);
     });
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const base = await load('https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js')
+      .then(() => 'https://unpkg.com/pdfjs-dist@3.11.174/build/')
+      .catch(() => load('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js')
+        .then(() => 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/'));
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.js';
   }
   const pdf = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const pg = await pdf.getPage(1), vp = pg.getViewport({ scale: 2 });

@@ -18,16 +18,23 @@ async function loadXLSX() {
     XLSX = window.XLSX;
     return XLSX;
   }
-  // Charger via CDN
-  await new Promise((resolve, reject) => {
+  // Charger via CDN — unpkg en priorité, repli jsdelivr (jamais cdnjs : bloqué par
+  // l'anti-tracking sur le terrain, voir loadPDFJS dans resultats.js pour le même motif)
+  await loadScript('https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js')
+    .catch(() => loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'));
+  if (!window.XLSX) throw new Error('Impossible de charger SheetJS (XLSX). Vérifiez la connexion internet.');
+  XLSX = window.XLSX;
+  return XLSX;
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.src = src;
     s.onload = resolve;
     s.onerror = reject;
     document.head.appendChild(s);
   });
-  XLSX = window.XLSX;
-  return XLSX;
 }
 
 // ── Rendu de l'écran Export ──────────────────────────────────
@@ -51,7 +58,10 @@ export function renderExport() {
           📤 Exporter en XLSX (macro ${config.type})
         </button>
         <button class="btn btn-primary btn-block" id="btn-export-fiche">
-          🧪 Fiche de prélèvement labo (PearL)
+          🧪 Bordereau labo (PearL)
+        </button>
+        <button class="btn btn-primary btn-block" id="btn-export-fiche-batiment">
+          🏢 Fiche de prélèvement par bâtiment
         </button>
         <button class="btn btn-secondary btn-block" id="btn-export-json">
           💾 Sauvegarder (JSON)
@@ -154,14 +164,14 @@ async function loadExportPreview() {
     // Bind export buttons
     $('#btn-export-xlsx')?.addEventListener('click', () => exportXLSX());
     $('#btn-export-fiche')?.addEventListener('click', () => exportFichePrelevement());
+    $('#btn-export-fiche-batiment')?.addEventListener('click', () => exportFicheBatiment());
     $('#btn-export-json')?.addEventListener('click', () => exportJSON());
     $('#btn-back-export')?.addEventListener('click', () => {
       State.clearMission();
       State.navigate('home');
     });
-    $$('.mission-nav-tab').forEach(tab => {
-      tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
-    });
+    // Navigation par onglets : gérée par bindGlobalNav() (app.js, délégation globale) —
+    // un second listener local ici déclenchait un double rendu de vue par clic.
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>Erreur : ${err.message}</p></div>`;
   }
@@ -208,18 +218,12 @@ async function exportXLSX() {
 
     const wb = xlsx.utils.book_new();
 
-    // ── Onglet Entrée ──
-    const entreeData = buildEntreeSheet(config, mission);
-    const wsEntree = xlsx.utils.aoa_to_sheet(entreeData);
+    // ── Onglet Entrée ── (valeurs posées exactement aux cellules excelCell du config)
+    const wsEntree = buildEntreeSheet(xlsx, config, mission);
     xlsx.utils.book_append_sheet(wb, wsEntree, 'Entrée');
 
-    // ── Onglet Tableau ──
-    const tableauData = buildTableauSheet(config, batiments, zones, points);
-    const wsTableau = xlsx.utils.aoa_to_sheet(tableauData);
-
-    // Appliquer des largeurs de colonnes
-    wsTableau['!cols'] = tableauData[0].map(() => ({ wch: 18 }));
-
+    // ── Onglet Tableau ── (valeurs posées exactement aux colonnes excelCol du config)
+    const wsTableau = buildTableauSheet(xlsx, config, batiments, zones, points);
     xlsx.utils.book_append_sheet(wb, wsTableau, 'Tableau');
 
     // Télécharger
@@ -238,117 +242,93 @@ async function exportXLSX() {
 }
 
 // ── Construction de l'onglet Entrée ─────────────────────────
+// Chaque valeur est posée EXACTEMENT à la cellule field.excelCell déclarée dans
+// config-ct.js/config-csp.js (et non plus en position séquentielle), pour rester
+// calée sur la macro. Le libellé est répété en colonne A de la même ligne pour
+// que le fichier reste lisible à l'ouverture.
 
-function buildEntreeSheet(config, mission) {
-  const rows = [];
+function buildEntreeSheet(xlsx, config, mission) {
+  const ws = {};
   const entree = mission.entree || {};
+  let maxRow = 1, maxCol = 1;
 
-  rows.push(['', 'RADON — ' + config.label]);
-  rows.push([]);
+  const setCell = (addr, value, type = 's') => {
+    if (value === '' || value === undefined || value === null) return;
+    ws[addr] = { t: type, v: value };
+    const pos = xlsx.utils.decode_cell(addr);
+    maxRow = Math.max(maxRow, pos.r + 1);
+    maxCol = Math.max(maxCol, pos.c + 1);
+  };
+
+  setCell('A1', 'RADON — ' + config.label);
 
   for (const section of config.entree.sections) {
-    rows.push(['', section.title]);
     for (const field of section.fields) {
-      const val = entree[field.id] ?? '';
-      rows.push(['', field.label, val]);
+      if (!field.excelCell) continue; // champs propres à l'appli, sans cellule macro (ex: nb_plans)
+      const val = entree[field.id];
+      if (val === undefined || val === null || val === '') continue;
+      const { c, r } = xlsx.utils.decode_cell(field.excelCell);
+      // Libellé juste à gauche de sa valeur (et non systématiquement en colonne A) :
+      // plusieurs champs de sections différentes partagent parfois la même ligne
+      // (colonnes C et F par ex.), une colonne A unique en écraserait un sur deux.
+      const labelAddr = xlsx.utils.encode_col(Math.max(c - 1, 0)) + (r + 1);
+      if (!ws[labelAddr]) setCell(labelAddr, field.label);
+      setCell(field.excelCell, val, field.type === 'number' ? 'n' : 's');
     }
-    rows.push([]);
   }
 
-  return rows;
+  ws['!ref'] = xlsx.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow, c: Math.max(maxCol, 5) } });
+  ws['!cols'] = Array.from({ length: Math.max(maxCol, 5) + 1 }, () => ({ wch: 22 }));
+  return ws;
 }
 
 // ── Construction de l'onglet Tableau ────────────────────────
+// Idem : chaque colonne vient de field.excelCol dans le config, plus de mapping
+// positionnel en dur. Corrige le décalage de colonnes et le mismatch CT/CSP.
 
-function buildTableauSheet(config, batiments, zones, points) {
+function colLetter(computedArr, id) {
+  const f = computedArr.find(c => c.id === id);
+  return f ? f.excelCol : null;
+}
+
+function buildTableauSheet(xlsx, config, batiments, zones, points) {
   const isCT = config.type === 'CT';
-  const rows = [];
+  const zoneKey = isCT ? 'zcs' : 'zone_homogene';
+  const t = config.tableau;
+  const startRow = config.export.sheets.tableau.startRow || 2; // 1ère ligne de données
+  const headerRow = startRow - 1;
 
-  // ── Ligne d'en-tête ──
-  if (isCT) {
-    rows.push([
-      'N° Ligne',
-      'Bâtiment',
-      'Zone à caractéristiques similaires (ZCS)',
-      'Année de construction',
-      'Matériau de construction principal',
-      'Niveau de la ZCS',
-      'Activité professionnelle',
-      'Interface sol/bâtiment',
-      'Ventilation',
-      'Température',
-      'Surface au sol (m²)',
-      'Nombre de détecteur',
-      'N° Détecteur',
-      'Lieu de pose',
-      'Type de fenêtres',
-      'Surface de la pièce instrumentée (m²)',
-      'Date de pose',
-      'Date de dépose',
-      'Durée totale de pose (jours)',
-      '',  // colonne vide (U)
-      'Dosimètre perdu ou détérioré',
-      'Activité volumique (Bq/m³) (k=2)',
-      'Incertitude',
-      'Activité volumique moyenne attribuée à la zone (Bq.m-3)',
-    ]);
-  } else {
-    rows.push([
-      'N° Ligne',
-      'Bâtiments',
-      'Nombre de salles',
-      'Surface au sol',
-      'Période de construction',
-      'Nombres de niveaux du bâtiment',
-      'Niveau le plus bas occupé',
-      'Interface avec le sol',
-      'Matériau de construction principal (mur porteurs)',
-      'N° Zone Homogène',
-      'Superficie',
-      'Nombres de pièces dans cette zone',
-      'Nombres de pièces occupées',
-      'Nombre de dispositifs de mesures',
-      'Niveau de la zone homogène (étage)',
-      "Entrée et sorties d'air de la zone",
-      'Interface de la zone avec le sol',
-      'Température Ambiante',
-      'Nom de la pièce mesuré (utilisation)',
-      'Superficie de la pièce mesuré',
-      'utilisation de la pièce',
-      'Composition des fenêtres',
-      'Niveau de la pièce',
-      'Aération par ouverture des fenêtres',
-      "Entrées et sorties d'air de la pièce",
-      'N° Dosimétrie',
-      'Type de dosimètre',
-      'Marque',
-      'Hauteur de dosimètre par rapport au sol',
-      'Distance du dosimètre par rapport au mur le plus proche',
-      'Date de début de mesure',
-      'Date de fin de mesure',
-      'Durée de total de pose (j)',
-      "Période d'inoccupation",
-      "Taux d'inoccupation",
-      'Dosimètre perdu ou détérioré',
-      'Concentration mesurée',
-      'Incertitude élargie (k=2)',
-      'Activité volumique moyenne',
-    ]);
-  }
+  const ws = {};
+  let maxCol = 1;
+  const setCell = (addr, value, type = 's') => {
+    ws[addr] = { t: type, v: value };
+    maxCol = Math.max(maxCol, xlsx.utils.decode_col(addr.replace(/\d+$/, '')) + 1);
+  };
+  const setField = (f, addr, value) => {
+    if (value === '' || value === undefined || value === null) return;
+    setCell(addr, value, f.type === 'number' ? 'n' : 's');
+  };
 
-  // ── Lignes de données ──
-  let lineNum = 1;
+  // ── En-têtes ──
+  // Note : .filter(f => f.excelCol) exclut les champs propres à l'appli qui n'ont
+  // pas de colonne dans la macro (ex: futurs champs bâtiment hors grille Tableau).
+  setCell('A' + headerRow, 'N° Ligne');
+  for (const f of t.batiment.fields.filter(f => f.excelCol))     setCell(f.excelCol + headerRow, f.label);
+  for (const f of t[zoneKey].fields.filter(f => f.excelCol))     setCell(f.excelCol + headerRow, f.label);
+  for (const f of t.point.fields.filter(f => f.excelCol))        setCell(f.excelCol + headerRow, f.label);
+  for (const f of t.computed.filter(f => f.excelCol))            setCell(f.excelCol + headerRow, f.label);
+
+  // ── Données ──
+  let lineNum = 1, row = startRow;
+  const valKey = isCT ? 'activite_bqm3' : 'concentration';
 
   for (const bat of batiments) {
     const batZones = zones.filter(z => z.batimentId === bat.id);
 
     for (const zone of batZones) {
-      const zonePoints = points.filter(p => p.zoneId === zone.id);
-
-      // Calculer la moyenne de la zone
-      const valKey = isCT ? 'activite_bqm3' : 'concentration';
+      const zonePoints = points.filter(p => p.zoneId === zone.id).sort((a, b) => a.order - b.order);
       const vals = zonePoints
-        .map(p => parseFloat(p.resultats?.[valKey] || ''))
+        .map(p => parseFloat(p.resultats?.[valKey]))
         .filter(v => !isNaN(v));
       const avg = vals.length > 0 ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : '';
 
@@ -356,100 +336,47 @@ function buildTableauSheet(config, batiments, zones, points) {
         const d = point.data || {};
         const r = point.resultats || {};
 
-        if (isCT) {
-          // Durée de pose
-          let duree = '';
-          if (d.date_pose && d.date_depose) {
-            const d1 = new Date(d.date_pose);
-            const d2 = new Date(d.date_depose);
-            duree = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-          }
-
-          rows.push([
-            lineNum++,
-            bat.data?.nom || '',
-            zone.data?.nom || '',
-            bat.data?.annee_construction || '',
-            bat.data?.materiau || '',
-            zone.data?.niveau || '',
-            zone.data?.activite || '',
-            zone.data?.interface_sol || '',
-            zone.data?.ventilation || '',
-            zone.data?.temperature || '',
-            zone.data?.surface_sol || '',
-            1,                                 // Nombre de détecteur : toujours 1 (1 clic = 1 capteur)
-            d.num_detecteur || '',
-            d.lieu_pose || '',
-            d.type_fenetres || '',
-            d.surface_piece || '',
-            d.date_pose || '',
-            d.date_depose || '',
-            duree,
-            '',  // colonne vide
-            r.dosimetre_perdu || 'NON',
-            r.activite_bqm3 || '',
-            r.incertitude || '',
-            avg,
-          ]);
-        } else {
-          // CSP
-          let duree = '';
-          if (d.date_debut && d.date_fin) {
-            const d1 = new Date(d.date_debut);
-            const d2 = new Date(d.date_fin);
-            duree = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-          }
-          const tauxInocc = duree && d.periode_inoccupation
-            ? (parseFloat(d.periode_inoccupation) / duree).toFixed(2)
-            : '';
-
-          rows.push([
-            lineNum++,
-            bat.data?.nom || '',
-            bat.data?.nb_salles || '',
-            bat.data?.surface_sol || '',
-            bat.data?.periode_construction || '',
-            bat.data?.nb_niveaux || '',
-            bat.data?.niveau_bas_occupe || '',
-            bat.data?.interface_sol || '',
-            bat.data?.materiau || '',
-            zone.data?.numero || '',
-            zone.data?.superficie || '',
-            zone.data?.nb_pieces || '',
-            zone.data?.nb_pieces_occupees || '',
-            zone.data?.nb_dispositifs || '',
-            zone.data?.niveau_etage || '',
-            zone.data?.entrees_air_zone || '',
-            zone.data?.interface_sol_zone || '',
-            zone.data?.temperature || '',
-            d.nom_piece || '',
-            d.superficie_piece || '',
-            d.utilisation || '',
-            d.type_fenetres || '',
-            d.niveau_piece || '',
-            d.aeration || '',
-            d.entrees_air_piece || '',
-            d.num_dosimetrie || '',
-            d.type_dosimetre || '',
-            d.marque || '',
-            d.hauteur_sol || '',
-            d.distance_mur || '',
-            d.date_debut || '',
-            d.date_fin || '',
-            duree,
-            d.periode_inoccupation || '',
-            tauxInocc,
-            r.dosimetre_perdu || 'NON',
-            r.concentration || '',
-            r.incertitude || '',
-            avg,
-          ]);
+        setCell('A' + row, lineNum++, 'n');
+        for (const f of t.batiment.fields.filter(f => f.excelCol)) setField(f, f.excelCol + row, bat.data?.[f.id]);
+        for (const f of t[zoneKey].fields.filter(f => f.excelCol)) setField(f, f.excelCol + row, zone.data?.[f.id]);
+        for (const f of t.point.fields) {
+          const src = f.phase === 'resultats' ? r : d;
+          setField(f, f.excelCol + row, src[f.id]);
         }
+
+        const activiteMoyCol = colLetter(t.computed, 'activite_moy');
+        if (activiteMoyCol) setCell(activiteMoyCol + row, avg, 'n');
+
+        if (isCT) {
+          const nbDetCol = colLetter(t.computed, 'nb_detecteur');
+          if (nbDetCol) setCell(nbDetCol + row, 1, 'n'); // toujours 1 : 1 clic sur le plan = 1 capteur
+          const dureeCol = colLetter(t.computed, 'duree_pose');
+          if (dureeCol && d.date_pose && d.date_depose) {
+            const duree = Math.round((new Date(d.date_depose) - new Date(d.date_pose)) / 86400000);
+            setCell(dureeCol + row, duree, 'n');
+          }
+        } else {
+          const dureeCol = colLetter(t.computed, 'duree_pose');
+          let duree = '';
+          if (dureeCol && d.date_debut && d.date_fin) {
+            duree = Math.round((new Date(d.date_fin) - new Date(d.date_debut)) / 86400000);
+            setCell(dureeCol + row, duree, 'n');
+          }
+          const tauxCol = colLetter(t.computed, 'taux_inoccupation');
+          if (tauxCol && duree && d.periode_inoccupation) {
+            setCell(tauxCol + row, Number((parseFloat(d.periode_inoccupation) / duree).toFixed(2)), 'n');
+          }
+        }
+
+        row++;
       }
     }
   }
 
-  return rows;
+  const lastRow = Math.max(row - 1, headerRow);
+  ws['!ref'] = xlsx.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: Math.max(maxCol - 1, 0) } });
+  ws['!cols'] = Array.from({ length: maxCol }, () => ({ wch: 18 }));
+  return ws;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -643,6 +570,168 @@ async function exportFichePrelevement() {
     State.toast(`Fiche labo ${filename} téléchargée (${orderedPoints.length} capteur(s))`, 'success');
   } catch (err) {
     State.toast('Erreur fiche labo : ' + err.message, 'error');
+    console.error(err);
+  }
+
+  State.setLoading(false);
+}
+
+// ══════════════════════════════════════════════════════════════
+// EXPORT FICHE DE PRÉLÈVEMENT PAR BÂTIMENT (technicien terrain)
+// Réplique le fichier réel "HCBD - fiche de prélèvement CSP-CT - V1" :
+// document DIFFÉRENT du bordereau labo PearL ci-dessus — celui-ci sert à
+// consigner les caractéristiques bâtiment/zone/point sur le terrain (base
+// du §6.2 "Caractéristiques des locaux" du rapport final), une feuille par
+// bâtiment, avec jusqu'à 10 points de mesure en colonnes D à M.
+// NOTE : certains champs du gabarit réel (nombre d'occupants du bâtiment,
+// nombre de pièces du bâtiment, dates de pose/dépose et durée d'inoccupation
+// AU NIVEAU BÂTIMENT) n'existent pas dans le schéma actuel de l'appli
+// (config-ct.js / config-csp.js) — ils sont donc laissés vides ci-dessous.
+// ══════════════════════════════════════════════════════════════
+
+async function exportFicheBatiment() {
+  State.setLoading(true);
+
+  try {
+    const xlsx = await loadXLSX();
+    const missionId = State.get('currentMissionId');
+    const config = State.getConfig();
+    const batiments = await BatimentDB.getByMission(missionId);
+    const zones     = await ZoneDB.getByMission(missionId);
+    const points    = await PointDB.getByMission(missionId);
+    const mission   = await MissionDB.getById(missionId);
+
+    const isCT = config.type === 'CT';
+    const zoneKey = isCT ? 'zcs' : 'zone_homogene';
+    const MAX_POINTS = 10; // largeur du gabarit réel (colonnes D à M)
+    const POINT_COLS = ['D','E','F','G','H','I','J','K','L','M'];
+
+    if (batiments.length === 0) {
+      State.toast('Aucun bâtiment à exporter', 'warning');
+      State.setLoading(false);
+      return;
+    }
+
+    const wb = xlsx.utils.book_new();
+
+    for (const bat of batiments) {
+      const ws = {};
+      const setCell = (addr, value, type = 's') => {
+        if (value === '' || value === undefined || value === null) return;
+        ws[addr] = { t: type, v: value };
+      };
+
+      const titre = isCT
+        ? 'Fiche de prélèvement par bâtiment - Code du Travail'
+        : 'Fiche de prélèvement par bâtiment - Code de la Santé Publique';
+      setCell('C1', titre);
+      setCell('C3', "Mesure intégrée de l'activité volumique en Radon 222");
+      setCell('C5', 'En application de la norme NF ISO 11665-4');
+
+      // ── Caractéristiques du bâtiment (colonne D, valeur unique) ──
+      const bd = bat.data || {};
+
+      // Dates de pose/dépose au niveau bâtiment = min/max des dates de tous ses points
+      // (le gabarit veut une seule date de pose/dépose par bâtiment, l'appli les saisit
+      // par point ; on les dérive plutôt que de redemander une double saisie).
+      const batZonesForDates = zones.filter(z => z.batimentId === bat.id);
+      const batPointsForDates = points.filter(p => batZonesForDates.some(z => z.id === p.zoneId));
+      const poseDates = batPointsForDates.map(p => (p.data || {})[isCT ? 'date_pose' : 'date_debut']).filter(Boolean).sort();
+      const deposeDates = batPointsForDates.map(p => (p.data || {})[isCT ? 'date_depose' : 'date_fin']).filter(Boolean).sort();
+      const datePoseBat = poseDates[0];
+      const dateDeposeBat = deposeDates[deposeDates.length - 1];
+      // Durée d'inoccupation bâtiment (CSP uniquement) = somme des périodes d'inoccupation de ses points
+      const dureeInoccBat = isCT ? null : batPointsForDates.reduce((sum, p) => {
+        const v = parseFloat((p.data || {}).periode_inoccupation);
+        return isNaN(v) ? sum : sum + v;
+      }, 0);
+
+      let r = 7;
+      setCell('A' + r,   'désignation du bâtiment :');       setCell('D' + r, bd.nom); r++;
+      if (!isCT) {
+        setCell('A' + r, 'niveau le plus bas occupé (au moins 1h/jour) du bâtiment :');
+        setCell('D' + r, bd.niveau_bas_occupe); r++;
+      }
+      setCell('A' + r,   "nombre d'occupants total du bâtiment :"); setCell('D' + r, bd.nb_occupants, 'n'); r++;
+      setCell('A' + r,   'surface au sol :');                  setCell('D' + r, isCT ? bd.surface_sol : bd.surface_sol, 'n'); r++;
+      setCell('A' + r,   'nombre de pièces :');                setCell('D' + r, isCT ? bd.nb_pieces : bd.nb_salles, 'n'); r++;
+      setCell('A' + r,   'période de construction :');         setCell('D' + r, isCT ? bd.annee_construction : bd.periode_construction); r++;
+      setCell('A' + r,   "Type d'interface sol/batiment :");   setCell('D' + r, bd.interface_sol); r++;
+      setCell('A' + r,   'Matériau de construction :');        setCell('D' + r, bd.materiau); r++;
+      setCell('A' + r,   'date de pose des dosimètres :');     setCell('D' + r, formatDateFr(datePoseBat)); r++;
+      setCell('A' + r,   'date de dépose des dosimètres :');   setCell('D' + r, formatDateFr(dateDeposeBat)); r++;
+      if (!isCT) {
+        setCell('A' + r, "durée d'innocupation (jours) :");
+        setCell('D' + r, dureeInoccBat > 0 ? dureeInoccBat : '', 'n');
+        r++;
+      }
+
+      // ── Grille Zone / Point (colonnes D à M = jusqu'à 10 points) ──
+      const titleRow = r + 1;
+      setCell('D' + titleRow, 'Caractéristiques du bâtiment');
+      const idxRow = titleRow + 1;
+      POINT_COLS.forEach((c, i) => setCell(c + idxRow, i + 1, 'n'));
+
+      const zoneRow0 = idxRow + 1;
+      const zoneLabels = isCT
+        ? ['Désignation Zone à Caractéristiques similaires', 'Niveau de la ZCS', 'Surface au sol  de la ZCS (en m2)', 'type de ventilation', "Entrée d'air en facade?", 'nombre de dosimètres posés']
+        : ['Désignation Zone Homogène', 'Niveau de la zone homogène', 'Surface au sol  de la zone homogène (en m2)', 'Type de ventilation', "Entrée d'air en facade?", 'Nombre de dosimètres posés'];
+      zoneLabels.forEach((lbl, i) => setCell('A' + (zoneRow0 + i), lbl));
+
+      const pointRow0 = zoneRow0 + zoneLabels.length + 2; // ligne de titre vide entre les deux blocs
+      const pointLabels = isCT
+        ? ['Numéro PEARL', 'Lieu de Pose', "Nombre d'occupants de la pièce", "Type d'Activité professionnelle (fréquence d'utilisation)", 'Hauteur de pose (en mètre)', 'Distance du mur (en mètre)', 'Surface de la pièce instrumentée (en m2)', "Type d'Ouvrants (Composition des fenêtres)", 'Aération  des ouvrants (Fréquente/Moyenne/Faible)', 'Température (Faible/Moyenne/Forte)']
+        : ['Numéro PEARL', 'Lieu de Pose', "Nombre d'occupants de la pièce", 'Type d\'activité dans la pièce', 'Hauteur de pose (en mètre)', 'Distance du mur (en mètre)', 'Surface de la pièce instrumentée (en m2)', "Type d'Ouvrants (Composition des fenêtres)", 'Aération  des ouvrants (Fréquente/Moyenne/Faible)', 'Température (Faible/Moyenne/Forte)'];
+      pointLabels.forEach((lbl, i) => setCell('A' + (pointRow0 + i), lbl));
+
+      // Remplir jusqu'à 10 points de ce bâtiment, colonne par colonne
+      const batZones = zones.filter(z => z.batimentId === bat.id);
+      let col = 0;
+      for (const zone of batZones) {
+        const zd = zone.data || {};
+        const zPts = points.filter(p => p.zoneId === zone.id).sort((a, b) => a.order - b.order);
+        for (const p of zPts) {
+          if (col >= MAX_POINTS) break;
+          const c = POINT_COLS[col];
+          // Bloc zone (répété pour chaque point de cette zone)
+          setCell(c + zoneRow0,     isCT ? zd.nom : zd.numero);
+          setCell(c + (zoneRow0+1), zd.niveau ?? zd.niveau_etage);
+          setCell(c + (zoneRow0+2), isCT ? zd.surface_sol : zd.superficie, 'n');
+          setCell(c + (zoneRow0+3), zd.ventilation ?? zd.entrees_air_zone);
+          // Bloc point
+          const pd = p.data || {};
+          setCell(c + pointRow0,     pd.num_detecteur ?? pd.num_dosimetrie);
+          setCell(c + (pointRow0+1), pd.lieu_pose ?? pd.nom_piece);
+          setCell(c + (pointRow0+3), isCT ? zd.activite : pd.utilisation);
+          setCell(c + (pointRow0+4), pd.hauteur_sol);
+          setCell(c + (pointRow0+5), pd.distance_mur);
+          setCell(c + (pointRow0+6), pd.surface_piece ?? pd.superficie_piece, 'n');
+          setCell(c + (pointRow0+7), pd.type_fenetres);
+          setCell(c + (pointRow0+8), pd.aeration);
+          setCell(c + (pointRow0+9), pd.temperature);
+          col++;
+        }
+      }
+      if (col > MAX_POINTS) {
+        console.warn(`Bâtiment "${bd.nom}" : ${col} points, seuls les ${MAX_POINTS} premiers tiennent sur la fiche (limite du gabarit).`);
+      }
+
+      const lastRow = pointRow0 + pointLabels.length;
+      ws['!ref'] = `A1:M${lastRow}`;
+      ws['!cols'] = [{ wch: 3 }, { wch: 3 }, { wch: 3 }].concat(POINT_COLS.map(() => ({ wch: 16 })));
+
+      const sheetName = (bd.nom || 'Bâtiment ' + (bat.order + 1)).replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Bâtiment';
+      xlsx.utils.book_append_sheet(wb, ws, sheetName);
+    }
+
+    const dossier = mission.entree?.numero_dossier || 'fiche';
+    const date = new Date().toISOString().slice(0, 10);
+    const safeDossier = String(dossier).replace(/[^a-zA-Z0-9_-]+/g, '_');
+    const filename = `FicheBatiment_${config.type}_${safeDossier}_${date}.xlsx`;
+    xlsx.writeFile(wb, filename);
+    State.toast(`${filename} téléchargée (${batiments.length} bâtiment(s))`, 'success');
+  } catch (err) {
+    State.toast('Erreur fiche bâtiment : ' + err.message, 'error');
     console.error(err);
   }
 

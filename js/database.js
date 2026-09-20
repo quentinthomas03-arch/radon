@@ -169,23 +169,38 @@ export const MissionDB = {
   },
 
   async delete(id) {
-    // Supprimer en cascade : photos, points, zones, batiments, plans
-    const photos = await getAllByIndex('photos', 'by_mission', id);
-    const points = await getAllByIndex('points', 'by_mission', id);
-    const zones  = await getAllByIndex('zones',  'by_mission', id);
-    const bats   = await getAllByIndex('batiments', 'by_mission', id);
-    const plans  = await getAllByIndex('plans', 'by_mission', id);
+    // Supprimer en cascade : photos, points, zones, batiments, plans, mission
+    // — dans UNE SEULE transaction IndexedDB pour garantir l'atomicité
+    // (soit tout est supprimé, soit rien, même en cas d'erreur en cours de route)
+    const db = await openDB();
+    const [photos, points, zones, bats, plans] = await Promise.all([
+      getAllByIndex('photos', 'by_mission', id),
+      getAllByIndex('points', 'by_mission', id),
+      getAllByIndex('zones',  'by_mission', id),
+      getAllByIndex('batiments', 'by_mission', id),
+      getAllByIndex('plans', 'by_mission', id),
+    ]);
 
-    for (const p of photos) await del('photos', p.id);
-    for (const p of points) await del('points', p.id);
-    for (const z of zones)  await del('zones',  z.id);
-    for (const b of bats)   await del('batiments', b.id);
-    for (const p of plans)  await del('plans', p.id);
-    await del('missions', id);
+    await new Promise((resolve, reject) => {
+      const t = db.transaction(['photos', 'points', 'zones', 'batiments', 'plans', 'missions'], 'readwrite');
+      for (const p of photos) t.objectStore('photos').delete(p.id);
+      for (const p of points) t.objectStore('points').delete(p.id);
+      for (const z of zones)  t.objectStore('zones').delete(z.id);
+      for (const b of bats)   t.objectStore('batiments').delete(b.id);
+      for (const p of plans)  t.objectStore('plans').delete(p.id);
+      t.objectStore('missions').delete(id);
+      t.oncomplete = resolve;
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
   },
 };
 
 // ── API Bâtiments ───────────────────────────────────────────
+
+function nextOrder(siblings) {
+  return siblings.reduce((max, s) => Math.max(max, s.order ?? -1), -1) + 1;
+}
 
 export const BatimentDB = {
   async create(missionId, data = {}) {
@@ -193,7 +208,7 @@ export const BatimentDB = {
     const bat = {
       id: generateId(),
       missionId,
-      order: siblings.length,
+      order: nextOrder(siblings),
       data: {},
       ...data,
     };
@@ -236,7 +251,7 @@ export const ZoneDB = {
       id: generateId(),
       batimentId,
       missionId,
-      order: siblings.length,
+      order: nextOrder(siblings),
       data: {},
       ...data,
     };
@@ -285,7 +300,7 @@ export const PointDB = {
       zoneId,
       batimentId,
       missionId,
-      order: siblings.length,
+      order: nextOrder(siblings),
       data: {},        // champs terrain
       resultats: {},   // champs résultats labo
       planPosition: null, // { planId, x, y } position sur le plan
@@ -344,6 +359,7 @@ export const PlanDB = {
       mimeType: data.mimeType || 'image/png',
       width: data.width || 0,
       height: data.height || 0,
+      planIndex: data.planIndex ?? 0,
       createdAt: new Date().toISOString(),
     };
     await put('plans', plan);

@@ -61,9 +61,11 @@ async function loadResultats() {
     container.innerHTML =
       renderImportButton() +
       renderSummary(config, batiments, zones, points) +
+      renderEcarts(config, zones, points) +
       renderResultsTable(config, batiments, zones, points);
 
     bindResultatsEvents(config, points);
+    bindEcartsEvents();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>Erreur : ${err.message}</p></div>`;
   }
@@ -132,6 +134,125 @@ function renderSummary(config, batiments, zones, points) {
       </div>
     </div>
   `;
+}
+
+// ── Écarts aux normes ────────────────────────────────────────
+// Détecte automatiquement les cas prévus par les 5 modèles d'écart de la macro
+// (onglet "ECARTS AUX NORMES") à partir des données déjà saisies, et pré-remplit
+// le texte correspondant. L'utilisateur relit/ajuste avant de le copier dans le
+// rapport — l'appli ne décide pas à sa place, elle évite juste la resaisie.
+
+function detectEcarts(config, zones, points) {
+  const isCT = config.type === 'CT';
+  const valKey = isCT ? 'activite_bqm3' : 'concentration';
+  const numKey = isCT ? 'num_detecteur' : 'num_dosimetrie';
+  const localKey = isCT ? 'lieu_pose' : 'nom_piece';
+  const poseKey = isCT ? 'date_pose' : 'date_debut';
+  const zoneLabel = (z) => (isCT ? z.data?.nom : z.data?.numero) || '?';
+  const zoneNiveau = (z) => (isCT ? z.data?.niveau : z.data?.niveau_etage) || '(niveau non renseigné)';
+  const tpl = (id) => config.ecarts_normes?.find(e => e.id === id)?.template || '';
+  const fill = (text, vals) => Object.entries(vals).reduce((t, [k, v]) => t.split('{' + k + '}').join(v ?? '?'), text);
+
+  const out = [];
+
+  // Écarts 1/2 — dosimètre perdu
+  for (const p of points) {
+    if ((p.resultats?.dosimetre_perdu || '') !== 'OUI') continue;
+    const zone = zones.find(z => z.id === p.zoneId);
+    if (!zone) continue;
+    const num = p.data?.[numKey], local = p.data?.[localKey];
+
+    const voisins = points
+      .filter(pp => pp.id !== p.id && pp.zoneId === zone.id)
+      .map(pp => ({ pp, val: parseFloat(pp.resultats?.[valKey]) }))
+      .filter(x => !isNaN(x.val))
+      .sort((a, b) => a.val - b.val)
+      .slice(0, 2);
+
+    const base = { num, local, niveau: zoneNiveau(zone), zone: zoneLabel(zone) };
+    let text;
+    if (voisins.length >= 2) {
+      const [v1, v2] = voisins;
+      text = fill(tpl('dosimetre_perdu_avec_adjacent'), {
+        ...base,
+        num2: v1.pp.data?.[numKey], local2: v1.pp.data?.[localKey], zone2: zoneLabel(zone), val2: Math.round(v1.val),
+        num3: v2.pp.data?.[numKey], local3: v2.pp.data?.[localKey], zone3: zoneLabel(zone), val3: Math.round(v2.val),
+      });
+    } else {
+      text = fill(tpl('dosimetre_perdu_sans_adjacent'), base);
+    }
+    out.push({ label: `Dosimètre perdu — ${local || '?'} (n°${num || '?'})`, text });
+  }
+
+  // Écart 3 — taux d'inoccupation > 20% (CSP uniquement : seul point.fields y définit periode_inoccupation)
+  if (!isCT) {
+    for (const p of points) {
+      const d = p.data || {};
+      if (!d.date_debut || !d.date_fin) continue;
+      const duree = Math.round((new Date(d.date_fin) - new Date(d.date_debut)) / 86400000);
+      const inocc = parseFloat(d.periode_inoccupation);
+      if (duree > 0 && !isNaN(inocc) && inocc / duree > 0.2) {
+        out.push({ label: `Taux d'inoccupation > 20% — ${d.nom_piece || '?'}`, text: tpl('duree_inoccupation') });
+      }
+    }
+  }
+
+  // Écart 4 — hors période réglementaire (15 septembre → 30 avril)
+  for (const p of points) {
+    const datePose = p.data?.[poseKey];
+    if (!datePose) continue;
+    const dt = new Date(datePose);
+    if (isNaN(dt.getTime())) continue;
+    const m = dt.getMonth() + 1, day = dt.getDate();
+    const dansLaPeriode = m <= 4 || m >= 10 || (m === 9 && day >= 15);
+    if (!dansLaPeriode) {
+      out.push({ label: `Hors période réglementaire — ${p.data?.[localKey] || '?'} (posé le ${formatDateFr(datePose)})`, text: tpl('periode_mesurage') });
+    }
+  }
+
+  return out;
+}
+
+function renderEcarts(config, zones, points) {
+  const ecarts = detectEcarts(config, zones, points);
+  if (ecarts.length === 0) return '';
+  return `
+    <div class="results-summary" style="margin-bottom:12px;">
+      <h3 style="margin:0 0 8px;">⚠️ Écarts aux normes détectés (${ecarts.length})</h3>
+      ${ecarts.map((e, i) => `
+        <div class="form-group" style="margin-bottom:10px;">
+          <label class="form-label">${escapeHtmlLocal(e.label)}</label>
+          <textarea class="form-input ecart-text" data-ecart-i="${i}" rows="4" style="font-size:.85em;">${escapeHtmlLocal(e.text)}</textarea>
+          <button class="btn btn-secondary btn-sm btn-copy-ecart" data-ecart-i="${i}" style="margin-top:4px;">📋 Copier</button>
+        </div>
+      `).join('')}
+      <p class="text-sm" style="opacity:.7;">Texte pré-rempli à partir des 5 modèles de la macro — relire et ajuster avant de reporter dans le rapport.</p>
+    </div>
+  `;
+}
+
+function bindEcartsEvents() {
+  $$('.btn-copy-ecart').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ta = $(`.ecart-text[data-ecart-i="${btn.dataset.ecartI}"]`);
+      if (!ta) return;
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        State.toast('Texte copié ✓', 'success', 1500);
+      } catch (err) {
+        State.toast('Impossible de copier (sélectionnez et copiez manuellement)', 'warning');
+      }
+    });
+  });
+}
+
+function escapeHtmlLocal(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatDateFr(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : (iso || '');
 }
 
 // ── Tableau de saisie des résultats ─────────────────────────
@@ -315,9 +436,8 @@ function bindResultatsEvents(config, points) {
   });
 
   // Nav tabs
-  $$('.mission-nav-tab').forEach(tab => {
-    tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
-  });
+  // Navigation par onglets : gérée par bindGlobalNav() (app.js, délégation globale) —
+  // un second listener local ici déclenchait un double rendu de vue par clic.
 }
 
 /**
@@ -331,16 +451,28 @@ async function handlePDFImport(file, points, config) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  // Extraire texte de toutes les pages
-  let fullText = '';
+  // Reconstruire le texte ligne par ligne, PAR POSITION (X/Y) et non par ordre
+  // d'apparition dans le flux du PDF. Vérifié sur de vrais rapports PearL : le
+  // gabarit (généré depuis Excel) dessine la valeur d'incertitude ("+/- 10") comme un
+  // objet texte séparé du reste de la ligne — pdf.js le restitue ailleurs dans
+  // `getTextContent().items` bien qu'il soit visuellement sur la même ligne (même Y).
+  // Un simple `.join(' ')` dans l'ordre du flux détache donc l'incertitude de son
+  // n° client. En reconstruisant par (Y puis X), chaque ligne redevient autonome :
+  // "N°Client  Lieu  Date  Début  Fin  Durée  Exposition  Activité +/- Incertitude".
+  let allLines = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
-    fullText += textContent.items.map(item => item.str).join(' ');
+    const items = textContent.items.map(it => ({
+      str: it.str,
+      x: it.transform[4],
+      y: it.transform[5],
+    }));
+    allLines.push(...reconstructPdfLines(items));
   }
 
   // Parser le tableau
-  const results = parsePDFTable(fullText);
+  const results = parsePDFTable(allLines);
 
   if (results.length === 0) {
     State.toast('⚠️ Aucun résultat trouvé dans le PDF', 'warning');
@@ -348,51 +480,76 @@ async function handlePDFImport(file, points, config) {
   }
 
   // Matcher et remplir
-  let matched = 0;
+  let matched = 0, lost = 0;
   for (const result of results) {
     const point = points.find(p => {
       const numDosi = String(p.data?.num_detecteur || p.data?.num_dosimetrie || '').trim();
       return numDosi === String(result.numClient).trim();
     });
+    if (!point) continue;
 
-    if (point) {
-      // Remplir les résultats
+    point.resultats = point.resultats || {};
+    if (result.perdu) {
+      // Le tableau PearL indique "perdu" au lieu d'une valeur quand le dosimètre
+      // n'a pas été retrouvé à la relève — reporté tel quel plutôt que silencieusement ignoré.
+      point.resultats.dosimetre_perdu = 'OUI';
+      lost++;
+    } else {
       const valKey = config.type === 'CT' ? 'activite_bqm3' : 'concentration';
-      point.resultats = point.resultats || {};
       point.resultats[valKey] = result.activite.toString();
       point.resultats.incertitude = result.incertitude.toString();
-
-      // Sauvegarder
-      await PointDB.update(point.id, { resultats: point.resultats });
-      matched++;
     }
+    await PointDB.update(point.id, { resultats: point.resultats });
+    matched++;
   }
 
-  State.toast(`✅ ${matched} résultats importés sur ${results.length}`, 'success');
+  const suffix = lost > 0 ? ` (dont ${lost} dosimètre(s) perdu(s))` : '';
+  State.toast(`✅ ${matched} résultat(s) importé(s) sur ${results.length}${suffix}`, 'success');
   loadResultats(); // Recharger le tableau
 }
 
 /**
- * Parser le tableau du PDF - FORMAT PEARL
- * Cherche CHAQUE LIGNE : NUM_CLIENT ... ACTIVITE +/- INCERTITUDE
+ * Regroupe les items de texte d'une page pdf.js en lignes visuelles, en les
+ * triant par position (Y décroissant = haut vers bas, puis X croissant = gauche
+ * vers droite) plutôt que par ordre d'apparition dans le flux du PDF.
  */
-function parsePDFTable(text) {
+function reconstructPdfLines(items, tolerance = 6) {
+  const sorted = [...items].sort((a, b) => b.y - a.y);
+  const rows = [];
+  for (const it of sorted) {
+    let row = rows.find(r => Math.abs(r.y - it.y) <= tolerance);
+    if (!row) { row = { y: it.y, items: [] }; rows.push(row); }
+    row.items.push(it);
+  }
+  return rows.map(r => r.items.sort((a, b) => a.x - b.x).map(it => it.str).join(' ').trim());
+}
+
+/**
+ * Parser le tableau du PDF — FORMAT PEARL.
+ * Chaque ligne (déjà reconstruite par position) est autonome :
+ * "N°Client  Lieu  Date…  Activité +/- Incertitude" ou "N°Client  Lieu  perdu".
+ */
+function parsePDFTable(lines) {
   const results = [];
 
-  // Remplacer les multiples espaces par un seul
-  const cleanText = text.replace(/\s+/g, ' ');
-  
-  // Regex : cherche 6 chiffres, puis du texte/nombres, puis 2 chiffres +/- 2 chiffres
-  // IMPORTANT : [^\d]* ou [^0-9]* pour arrêter avant les prochains chiffres
-  const pattern = /(\d{6})\s+([^0-9]+?)(\d{2})\s+\+\/\-\s+(\d{2})(?=\s+\d{6}|$)/g;
+  for (const line of lines) {
+    const head = /^(\d{5,6})\s+(.+)$/.exec(line.trim());
+    if (!head) continue;
+    const numClient = head[1];
+    const rest = head[2];
 
-  let match;
-  while ((match = pattern.exec(cleanText)) !== null) {
-    const numClient = match[1];
-    const activite = parseFloat(match[3]);
-    const incertitude = parseFloat(match[4]);
+    if (/\bperdu\b/i.test(rest)) {
+      results.push({ numClient, perdu: true });
+      continue;
+    }
 
-    results.push({ numClient, activite, incertitude, lieu: '—' });
+    const val = /(\d{1,5}(?:[.,]\d+)?)\s*\+\/-\s*(\d{1,4}(?:[.,]\d+)?)/.exec(rest);
+    if (!val) continue;
+    const activite = parseFloat(val[1].replace(',', '.'));
+    const incertitude = parseFloat(val[2].replace(',', '.'));
+    if (isNaN(activite) || isNaN(incertitude)) continue;
+
+    results.push({ numClient, activite, incertitude });
   }
 
   console.log('PDF parsing - résultats trouvés:', results.length, results);

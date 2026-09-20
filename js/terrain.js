@@ -247,10 +247,8 @@ function bindTerrainEvents(config) {
     State.navigate('home');
   });
 
-  // Tabs navigation
-  $$('.mission-nav-tab').forEach(tab => {
-    tab.addEventListener('click', () => State.navigate(tab.dataset.navView));
-  });
+  // Navigation par onglets : gérée par bindGlobalNav() (app.js, délégation globale) —
+  // un second listener local ici déclenchait un double rendu de vue par clic.
 
   // Toggle sections (bâtiment / zone / point)
   $$('.tree-bat-header').forEach(header => {
@@ -400,9 +398,10 @@ function collectFormData(formEl, prefix, fields) {
   const data = {};
   for (const f of fields) {
     const input = formEl.querySelector(`[name="${prefix}${f.id}"]`);
-    if (input && input.value !== '') {
-      data[f.id] = input.value;
-    }
+    // On écrit aussi les valeurs vides : sinon un champ qu'on vide volontairement
+    // (ex: correction d'une saisie) resterait bloqué sur son ancienne valeur,
+    // puisque BatimentDB/ZoneDB/PointDB.update() fusionne (merge) plutôt que remplace.
+    if (input) data[f.id] = input.value;
   }
   return data;
 }

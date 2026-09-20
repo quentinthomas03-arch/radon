@@ -2,7 +2,7 @@
 // sw.js — Service Worker : cache offline
 // ============================================================
 
-const CACHE_NAME = 'radon-pwa-v9';
+const CACHE_NAME = 'radon-pwa-v10';
 
 const ASSETS = [
   './',
@@ -20,12 +20,8 @@ const ASSETS = [
   './manifest.json',
 ];
 
-// CDN resources (cached on first use)
-const CDN_URLS = [
-  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-];
+// CDN (unpkg, fallback jsdelivr — jamais cdnjs, bloqué par l'anti-tracking sur le terrain)
+const CDN_ORIGINS = ['https://unpkg.com', 'https://cdn.jsdelivr.net'];
 
 // Install — cache all assets
 self.addEventListener('install', (event) => {
@@ -49,10 +45,10 @@ self.addEventListener('activate', (event) => {
 
 // Fetch — cache-first for app, network-first for CDN
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
+  const url = event.request.url;
 
-  // CDN resources — network first, fall back to cache
-  if (CDN_URLS.some(cdn => event.request.url.startsWith(cdn.split('/').slice(0, 3).join('/')))) {
+  // CDN (SheetJS, pdf.js) — network first, fallback cache
+  if (CDN_ORIGINS.some(origin => url.startsWith(origin))) {
     event.respondWith(
       fetch(event.request)
         .then(response => {
@@ -68,7 +64,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // JS/CSS — network first (toujours les dernières versions)
-  if (event.request.url.includes('/js/') || event.request.url.includes('/css/')) {
+  if (url.includes('/js/') || url.includes('/css/')) {
     event.respondWith(
       fetch(event.request)
         .then(response => {
