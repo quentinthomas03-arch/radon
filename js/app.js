@@ -1,8 +1,9 @@
 // ============================================================
 // app.js — Contrôleur principal de l'application
+// ✨ AVEC IMPORT JSON INTÉGRÉ
 // ============================================================
 
-import { openDB, MissionDB, BatimentDB, ZoneDB, PointDB } from './database.js';
+import { openDB, MissionDB, BatimentDB, ZoneDB, PointDB, importMissionFull } from './database.js';
 import * as State from './state.js';
 import { renderPlan, initPlan }       from './plan.js';
 import { renderTerrain }              from './terrain.js';
@@ -83,9 +84,19 @@ function renderHome() {
     <div class="home-screen">
       <div class="home-header">
         <div class="home-logo">
-          <svg viewBox="0 0 48 48" width="64" height="64">
-            <circle cx="24" cy="24" r="22" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
-            <text x="24" y="30" text-anchor="middle" font-size="18" font-weight="700" fill="var(--accent)">Rn</text>
+          <svg viewBox="0 0 100 100" width="72" height="72">
+            <defs>
+              <linearGradient id="logo-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#4a6a8a"/>
+                <stop offset="100%" stop-color="#5b3290"/>
+              </linearGradient>
+            </defs>
+            <rect width="100" height="100" rx="20" fill="url(#logo-grad)"/>
+            <circle cx="50" cy="44" r="26" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="1.5"/>
+            <text x="50" y="52" text-anchor="middle" font-family="Georgia,serif" font-size="30" font-weight="700" fill="#fff">Rn</text>
+            <text x="50" y="68" text-anchor="middle" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,.45)">222</text>
+            <rect x="20" y="78" width="60" height="1.5" rx="1" fill="rgba(255,255,255,.12)"/>
+            <text x="50" y="92" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="600" fill="rgba(255,255,255,.5)">MESURAGE</text>
           </svg>
         </div>
         <h1>Radon — Saisie terrain</h1>
@@ -112,17 +123,25 @@ function renderHome() {
         <button class="btn btn-secondary btn-block" id="btn-list-missions">
           📋 Missions existantes
         </button>
-        <button class="btn btn-secondary btn-block" id="btn-import-mission" style="margin-top:8px;">
-          📥 Importer une mission (.json)
+      </div>
+
+      <!-- Zone de drag & drop pour import JSON -->
+      <div class="import-drop-zone" id="import-drop-zone">
+        <input type="file" id="import-json-file" accept=".json" style="display:none;">
+        <div class="import-drop-icon">📥</div>
+        <div class="import-drop-title">Importer une sauvegarde</div>
+        <div class="import-drop-hint">Glissez un fichier JSON ici</div>
+        <div class="import-drop-or">ou</div>
+        <button class="btn btn-secondary btn-sm" id="btn-import-browse">
+          Parcourir les fichiers
         </button>
-        <input type="file" id="import-mission-input" accept=".json" style="display:none;">
       </div>
     </div>
   `;
 }
 
 function bindHomeEvents() {
-  // Cartes CT / CSP
+  // ── Cartes CT / CSP ────────────────────────────────────────
   $$('.type-card').forEach(card => {
     card.addEventListener('click', async () => {
       const type = card.dataset.type;
@@ -139,55 +158,250 @@ function bindHomeEvents() {
     });
   });
 
-  // Liste missions
+  // ── Liste missions ─────────────────────────────────────────
   $('#btn-list-missions')?.addEventListener('click', () => {
     State.navigate('mission-list');
   });
 
-  // Import JSON de mission (backup exporté depuis l'onglet Export d'une autre mission/appareil)
-  $('#btn-import-mission')?.addEventListener('click', () => $('#import-mission-input')?.click());
-  $('#import-mission-input')?.addEventListener('change', handleImportMission);
+  // ── Import JSON : bouton + drag & drop ─────────────────────
+  const dropZone = $('#import-drop-zone');
+  const fileInput = $('#import-json-file');
+  const browseBtn = $('#btn-import-browse');
+
+  // Clic bouton "Parcourir"
+  browseBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    fileInput?.click();
+  });
+
+  // Changement de fichier via input
+  fileInput?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleImportFile(file);
+    e.target.value = ''; // Reset
+  });
+
+  // ── Drag & drop ────────────────────────────────────────────
+  if (dropZone) {
+    // Empêcher les comportements par défaut
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, false);
+    });
+
+    // Ajouter classe visuelle au survol
+    dropZone.addEventListener('dragenter', () => dropZone.classList.add('dragover'));
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('dragover', () => dropZone.classList.add('dragover'));
+
+    // Traitement du drop
+    dropZone.addEventListener('drop', (e) => {
+      dropZone.classList.remove('dragover');
+      const files = e.dataTransfer?.files;
+      if (files?.[0]) {
+        const file = files[0];
+        if (file.type === 'application/json' || file.name.endsWith('.json')) {
+          handleImportFile(file);
+        } else {
+          State.toast('⚠️ Veuillez glisser un fichier .json', 'warning');
+        }
+      }
+    });
+
+    // Clic direct sur la zone
+    dropZone.addEventListener('click', (e) => {
+      if (e.target === dropZone || dropZone.contains(e.target)) {
+        // Ne pas déclencher si c'est le bouton
+        if (e.target !== browseBtn && !browseBtn?.contains(e.target)) {
+          fileInput?.click();
+        }
+      }
+    });
+  }
 }
 
-async function handleImportMission(e) {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
+/**
+ * Traiter le fichier JSON importé
+ */
+async function handleImportFile(file) {
+  State.setLoading(true);
 
-  let dump;
   try {
     const text = await file.text();
-    dump = JSON.parse(text);
+    const dump = JSON.parse(text);
+
+    // Validation
+    if (!dump.mission || !dump.mission.id) {
+      throw new Error('Fichier JSON invalide : structure mission non trouvée');
+    }
+
+    // Afficher le modal d'aperçu
+    showImportPreview(dump, async () => {
+      try {
+        // Importer
+        const importedMission = await importMissionFull(dump);
+
+        // Affichage succès
+        const dossier = importedMission.entree?.numero_dossier || 'sans n°';
+        const type = importedMission.type === 'CT' ? 'Code du Travail' : 'Code de la Santé Publique';
+
+        State.toast(`✅ Importée : ${dossier} (${type})`, 'success');
+        State.navigate('mission-list');
+      } catch (err) {
+        State.toast('❌ Erreur lors de l\'import : ' + err.message, 'error');
+      } finally {
+        State.setLoading(false);
+      }
+    });
   } catch (err) {
-    State.toast('Fichier JSON invalide : ' + err.message, 'error');
-    return;
+    State.toast('❌ Erreur de lecture : ' + err.message, 'error');
+    console.error('Import error:', err);
+    State.setLoading(false);
   }
+}
 
-  if (!dump?.mission?.id || !dump.mission.type) {
-    State.toast('Format non reconnu — ce fichier ne semble pas être une sauvegarde de mission Radon.', 'error');
-    return;
-  }
+/**
+ * Afficher le modal d'aperçu avant confirmation
+ */
+function showImportPreview(dump, onConfirm) {
+  const { mission, batiments, zones, points, plans, photos } = dump;
+  const isCT = mission.type === 'CT';
 
-  const dossier = dump.mission.entree?.numero_dossier || '(sans numéro)';
-  const etab    = dump.mission.entree?.etab_nom || '(sans nom)';
-  const nbBat   = (dump.batiments || []).length;
-  const nbPts   = (dump.points || []).length;
+  // Compter les éléments
+  const nbBatiments = batiments?.length || 0;
+  const nbZones = zones?.length || 0;
+  const nbPoints = points?.length || 0;
+  const nbResultats = points?.filter(p =>
+    p.resultats?.activite_bqm3 || p.resultats?.concentration
+  ).length || 0;
+  const nbPlans = plans?.length || 0;
 
-  const existing = await MissionDB.getById(dump.mission.id);
-  const summary = `Importer cette mission ?\n\nType : ${dump.mission.type}\nDossier : ${dossier}\nÉtablissement : ${etab}\nBâtiments : ${nbBat}\nPoints de mesure : ${nbPts}` +
-    (existing ? '\n\n⚠️ Une mission avec cet identifiant existe déjà et sera ÉCRASÉE.' : '');
-  if (!confirm(summary)) return;
+  const dossier = mission.entree?.numero_dossier || '(sans numéro)';
+  const etab = mission.entree?.etab_nom || '—';
+  const dateCreated = new Date(mission.createdAt).toLocaleDateString('fr-FR');
 
-  State.setLoading(true);
-  try {
-    const { importMissionFull } = await import('./database.js');
-    await importMissionFull(dump);
-    State.toast('Mission importée ✓', 'success');
-    renderView('mission-list');
-  } catch (err) {
-    State.toast('Erreur import : ' + err.message, 'error');
-  }
-  State.setLoading(false);
+  // Créer modal
+  const modal = document.createElement('div');
+  modal.className = 'import-preview-modal';
+  modal.id = 'import-preview-modal';
+  modal.innerHTML = `
+    <div class="import-preview-backdrop"></div>
+    <div class="import-preview-dialog">
+      <div class="import-preview-header">
+        <h3>📥 Aperçu de l'importation</h3>
+        <button class="btn-close" id="btn-preview-close">✕</button>
+      </div>
+
+      <div class="import-preview-content">
+        <!-- Info générale -->
+        <div class="preview-section">
+          <div class="preview-section-title">Informations</div>
+          <div class="preview-info-grid">
+            <div class="preview-info-item">
+              <span class="preview-info-label">Type</span>
+              <span class="preview-info-value ${isCT ? 'badge-ct' : 'badge-csp'}">
+                ${isCT ? '🏢 Code du Travail' : '🏫 Code de la Santé Publique'}
+              </span>
+            </div>
+            <div class="preview-info-item">
+              <span class="preview-info-label">N° Dossier</span>
+              <span class="preview-info-value">${dossier}</span>
+            </div>
+            <div class="preview-info-item">
+              <span class="preview-info-label">Établissement</span>
+              <span class="preview-info-value" title="${etab}">${etab}</span>
+            </div>
+            <div class="preview-info-item">
+              <span class="preview-info-label">Créée le</span>
+              <span class="preview-info-value">${dateCreated}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Statistiques -->
+        <div class="preview-section">
+          <div class="preview-section-title">Données</div>
+          <div class="preview-stats">
+            <div class="stat-item">
+              <div class="stat-icon">🏢</div>
+              <div class="stat-label">Bâtiments</div>
+              <div class="stat-value">${nbBatiments}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-icon">📍</div>
+              <div class="stat-label">Zones</div>
+              <div class="stat-value">${nbZones}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-icon">📊</div>
+              <div class="stat-label">Capteurs</div>
+              <div class="stat-value">${nbPoints}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-icon">✓</div>
+              <div class="stat-label">Résultats</div>
+              <div class="stat-value">${nbResultats}</div>
+            </div>
+            ${nbPlans > 0 ? `
+            <div class="stat-item">
+              <div class="stat-icon">🖼</div>
+              <div class="stat-label">Plans</div>
+              <div class="stat-value">${nbPlans}</div>
+            </div>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- Avertissement si incomplet -->
+        ${nbPoints > nbResultats && nbResultats > 0 ? `
+          <div class="preview-warning">
+            ⚠️ ${nbPoints - nbResultats} résultat(s) manquant(s) sur ${nbPoints} capteur(s)
+          </div>
+        ` : ''}
+
+        ${nbPoints === 0 ? `
+          <div class="preview-info">
+            ℹ️ Aucun capteur n'a encore été placé
+          </div>
+        ` : ''}
+      </div>
+
+      <div class="import-preview-footer">
+        <button class="btn btn-secondary" id="btn-preview-cancel">Annuler</button>
+        <button class="btn btn-primary" id="btn-preview-confirm">Importer</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Binding
+  const closeModal = () => {
+    modal.classList.add('fade-out');
+    setTimeout(() => modal.remove(), 300);
+  };
+
+  $('#btn-preview-close', modal)?.addEventListener('click', closeModal);
+  $('#btn-preview-cancel', modal)?.addEventListener('click', closeModal);
+
+  $('#btn-preview-confirm', modal)?.addEventListener('click', () => {
+    closeModal();
+    onConfirm();
+  });
+
+  // Fermer avec Échap
+  const escapeHandler = (e) => {
+    if (e.key === 'Escape') {
+      closeModal();
+      document.removeEventListener('keydown', escapeHandler);
+    }
+  };
+  document.addEventListener('keydown', escapeHandler);
+
+  // Animation d'entrée
+  requestAnimationFrame(() => modal.classList.add('show'));
 }
 
 // ── Vue : Liste des missions ────────────────────────────────
@@ -370,6 +584,7 @@ function renderField(field) {
 }
 
 function renderMissionNav() {
+  const config = State.getConfig();
   const views = [
     { id: 'entree',    label: '📝 Entrée',    icon: '📝' },
     { id: 'plan',      label: '🗺 Plan',       icon: '🗺' },
@@ -467,7 +682,7 @@ function renderPlanView() {
       <h2>${config?.label || ''} — Plan</h2>
     </div>
     ${renderMissionNav()}
-    <div id="plan-container">${renderPlan()}</div>
+    ${renderPlan()}
   `;
 }
 
