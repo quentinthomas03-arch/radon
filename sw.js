@@ -1,12 +1,19 @@
 // ============================================================
-// sw.js — Service Worker : cache offline
+// sw.js — Service Worker : cache offline (network-first pour js/css)
 // ============================================================
 
-const CACHE_NAME = 'radon-pwa-v10';
+const CACHE_NAME = 'radon-pwa-v1';
 
 const ASSETS = [
   './',
   './index.html',
+  './manifest.json',
+  './favicon.svg',
+  './favicon-96x96.png',
+  './apple-touch-icon.png',
+  './web-app-manifest-192x192.png',
+  './web-app-manifest-512x512.png',
+  './web-app-manifest-maskable-512x512.png',
   './css/main.css',
   './js/app.js',
   './js/state.js',
@@ -17,33 +24,29 @@ const ASSETS = [
   './js/terrain.js',
   './js/resultats.js',
   './js/export.js',
-  './manifest.json',
 ];
 
 // CDN (unpkg, fallback jsdelivr — jamais cdnjs, bloqué par l'anti-tracking sur le terrain)
 const CDN_ORIGINS = ['https://unpkg.com', 'https://cdn.jsdelivr.net'];
 
-// Install — cache all assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(ASSETS))
+      .then(cache => Promise.all(ASSETS.map(url =>
+        cache.add(url).catch(err => console.warn('[SW] Fichier ignoré:', url, err))
+      )))
       .then(() => self.skipWaiting())
   );
 });
 
-// Activate — clean old caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(
-        keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
-      )
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
 
-// Fetch — cache-first for app, network-first for CDN
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
 
@@ -63,28 +66,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // JS/CSS — network first (toujours les dernières versions)
-  if (url.includes('/js/') || url.includes('/css/')) {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(event.request))
-    );
-    return;
-  }
-
-  // Autres assets — cache first
+  // Assets applicatifs (js/css) — network first pour toujours servir la dernière
+  // version déployée ; repli sur le cache hors-ligne.
   event.respondWith(
-    caches.match(event.request)
-      .then(cached => cached || fetch(event.request))
-      .catch(() => {
-        if (event.request.mode === 'navigate') return caches.match('./index.html');
+    fetch(event.request)
+      .then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+        return response;
       })
+      .catch(() => caches.match(event.request).then(cached => {
+        if (cached) return cached;
+        if (event.request.mode === 'navigate') return caches.match('./index.html');
+      }))
   );
 });

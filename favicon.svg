@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#004d87"/>
+      <stop offset="0.6" stop-color="#0066b3"/>
+      <stop offset="1" stop-color="#1a8fd4"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Flux d'air : trois traits avec spirale (style Feather "wind") -->
+  <g fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round">
+    <path d="M100 200 h190 a46 46 0 1 0 -46 -46"/>
+    <path d="M100 268 h256 a46 46 0 1 1 -46 46"/>
+    <path d="M100 336 h150 a38 38 0 1 1 -38 38"/>
+  </g>
+</svg>
