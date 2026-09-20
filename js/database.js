@@ -1,6 +1,6 @@
 // ============================================================
 // database.js — IndexedDB : stockage local hors-ligne
-// Stores : missions, batiments, zones, points, plans, photos
+// Stores : missions, batiments, zones, points, plans
 // ============================================================
 
 const DB_NAME = 'RadonPWA';
@@ -57,13 +57,6 @@ export async function openDB() {
       if (!db.objectStoreNames.contains('plans')) {
         const pls = db.createObjectStore('plans', { keyPath: 'id' });
         pls.createIndex('by_mission', 'missionId');
-      }
-
-      // ── Store : photos (photos terrain) ───────────────────
-      if (!db.objectStoreNames.contains('photos')) {
-        const phs = db.createObjectStore('photos', { keyPath: 'id' });
-        phs.createIndex('by_point', 'pointId');
-        phs.createIndex('by_mission', 'missionId');
       }
     };
 
@@ -147,10 +140,6 @@ export const MissionDB = {
     return getAll('missions');
   },
 
-  async getAllByType(type) {
-    return getAllByIndex('missions', 'by_type', type);
-  },
-
   async update(id, patch) {
     const mission = await get('missions', id);
     if (!mission) throw new Error('Mission not found: ' + id);
@@ -169,12 +158,11 @@ export const MissionDB = {
   },
 
   async delete(id) {
-    // Supprimer en cascade : photos, points, zones, batiments, plans, mission
+    // Supprimer en cascade : points, zones, batiments, plans, mission
     // — dans UNE SEULE transaction IndexedDB pour garantir l'atomicité
     // (soit tout est supprimé, soit rien, même en cas d'erreur en cours de route)
     const db = await openDB();
-    const [photos, points, zones, bats, plans] = await Promise.all([
-      getAllByIndex('photos', 'by_mission', id),
+    const [points, zones, bats, plans] = await Promise.all([
       getAllByIndex('points', 'by_mission', id),
       getAllByIndex('zones',  'by_mission', id),
       getAllByIndex('batiments', 'by_mission', id),
@@ -182,8 +170,7 @@ export const MissionDB = {
     ]);
 
     await new Promise((resolve, reject) => {
-      const t = db.transaction(['photos', 'points', 'zones', 'batiments', 'plans', 'missions'], 'readwrite');
-      for (const p of photos) t.objectStore('photos').delete(p.id);
+      const t = db.transaction(['points', 'zones', 'batiments', 'plans', 'missions'], 'readwrite');
       for (const p of points) t.objectStore('points').delete(p.id);
       for (const z of zones)  t.objectStore('zones').delete(z.id);
       for (const b of bats)   t.objectStore('batiments').delete(b.id);
@@ -310,16 +297,6 @@ export const PointDB = {
     return point;
   },
 
-  async getByZone(zoneId) {
-    const points = await getAllByIndex('points', 'by_zone', zoneId);
-    return points.sort((a, b) => a.order - b.order);
-  },
-
-  async getByBatiment(batimentId) {
-    const points = await getAllByIndex('points', 'by_batiment', batimentId);
-    return points.sort((a, b) => a.order - b.order);
-  },
-
   async getByMission(missionId) {
     const points = await getAllByIndex('points', 'by_mission', missionId);
     return points.sort((a, b) => a.order - b.order);
@@ -341,8 +318,6 @@ export const PointDB = {
   },
 
   async delete(id) {
-    const photos = await getAllByIndex('photos', 'by_point', id);
-    for (const ph of photos) await del('photos', ph.id);
     await del('points', id);
   },
 };
@@ -381,39 +356,6 @@ export const PlanDB = {
     await put('plans', plan);
     return plan;
   },
-
-  async delete(id) {
-    await del('plans', id);
-  },
-};
-
-// ── API Photos ──────────────────────────────────────────────
-
-export const PhotoDB = {
-  async create(pointId, missionId, data = {}) {
-    const photo = {
-      id: generateId(),
-      pointId,
-      missionId,
-      imageData: data.imageData,  // base64
-      caption: data.caption || '',
-      createdAt: new Date().toISOString(),
-    };
-    await put('photos', photo);
-    return photo;
-  },
-
-  async getByPoint(pointId) {
-    return getAllByIndex('photos', 'by_point', pointId);
-  },
-
-  async getByMission(missionId) {
-    return getAllByIndex('photos', 'by_mission', missionId);
-  },
-
-  async delete(id) {
-    await del('photos', id);
-  },
 };
 
 // ── Export complet d'une mission (pour debug / sauvegarde) ──
@@ -426,9 +368,8 @@ export async function exportMissionFull(missionId) {
   const zones     = await ZoneDB.getByMission(missionId);
   const points    = await PointDB.getByMission(missionId);
   const plans     = await PlanDB.getByMission(missionId);
-  const photos    = await PhotoDB.getByMission(missionId);
 
-  return { mission, batiments, zones, points, plans, photos };
+  return { mission, batiments, zones, points, plans };
 }
 
 // ── Import complet d'une mission ────────────────────────────
@@ -439,6 +380,5 @@ export async function importMissionFull(dump) {
   for (const z of dump.zones)     await put('zones', z);
   for (const p of dump.points)    await put('points', p);
   for (const p of dump.plans)     await put('plans', p);
-  for (const p of dump.photos)    await put('photos', p);
   return dump.mission;
 }

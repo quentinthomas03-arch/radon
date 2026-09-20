@@ -266,7 +266,7 @@ async function handleImportFile(file) {
  * Afficher le modal d'aperçu avant confirmation
  */
 function showImportPreview(dump, onConfirm) {
-  const { mission, batiments, zones, points, plans, photos } = dump;
+  const { mission, batiments, zones, points, plans } = dump;
   const isCT = mission.type === 'CT';
 
   // Compter les éléments
